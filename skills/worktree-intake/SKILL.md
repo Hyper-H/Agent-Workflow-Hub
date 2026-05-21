@@ -9,9 +9,17 @@ description: Recover the current feature or branch context for multi-worktree, m
 
 Use this skill to recover the current worktree context from the local sidecar before doing a broad project scan. Prefer this skill when the user asks to continue a branch, take over a worktree, or resume a feature with minimal repeated context building.
 
+Typical trigger phrases include:
+
+- `Take over this worktree`
+- `Recover the current feature context`
+- `Continue this branch`
+- `Resume this feature`
+- `Tell me where this worktree currently stands`
+
 ## Workflow
 
-1. Run the shared sidecar tool:
+1. Run the shared sidecar tool in the background:
 
 ```powershell
 python tools\worktree-context-reuse-v1\context_sidecar.py intake

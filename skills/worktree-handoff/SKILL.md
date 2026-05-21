@@ -9,6 +9,14 @@ description: Save the latest feature status for multi-worktree, multi-thread dev
 
 Use this skill to compress the current task state into the local sidecar and a latest handoff file before the thread ends. Prefer this skill whenever the user asks to hand off a worktree, wrap a feature round, or preserve current branch state for the next agent.
 
+Typical trigger phrases include:
+
+- `Sync the current feature state`
+- `Prepare handoff for the next agent`
+- `Before I submit the PR, save current status`
+- `End this round and write handoff`
+- `Archive the current task`
+
 ## Workflow
 
 1. Gather the high-value semantics from the current conversation or workspace state:
@@ -21,7 +29,7 @@ Use this skill to compress the current task state into the local sidecar and a l
 - risks
 - validation status
 
-2. Run the shared sidecar tool with explicit fields:
+2. Run the shared sidecar tool in the background with explicit fields:
 
 ```powershell
 python tools\worktree-context-reuse-v1\context_sidecar.py handoff --goal "..." --status active --next-step "..." --thread-summary "..."

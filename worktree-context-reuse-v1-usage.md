@@ -19,7 +19,22 @@ This repository includes starter templates:
 
 Fill these with stable, low-frequency repo facts. Do not put task progress or handoff state here.
 
-## Basic Commands
+## Conversation-First Usage
+
+The intended primary interface is conversation through the two skills.
+
+Typical prompts:
+
+- `Use $worktree-intake to recover the current worktree context and tell me the next step.`
+- `Use $worktree-handoff to save the current worktree status and prepare the next agent handoff.`
+- `Take over this worktree and recover the current context.`
+- `Sync the current feature state before I submit the PR.`
+- `End this round and leave a clean handoff for the next agent.`
+- `Archive the current task, we are done here.`
+
+In the intended workflow, the skills call the sidecar tool in the background. You should not need to run the Python commands manually during normal usage.
+
+## Low-Level Commands
 
 Run from the target worktree directory:
 
@@ -29,7 +44,7 @@ python tools\worktree-context-reuse-v1\context_sidecar.py snapshot
 python tools\worktree-context-reuse-v1\context_sidecar.py intake
 ```
 
-Write a handoff:
+Write a handoff manually:
 
 ```powershell
 python tools\worktree-context-reuse-v1\context_sidecar.py handoff `
@@ -39,7 +54,7 @@ python tools\worktree-context-reuse-v1\context_sidecar.py handoff `
   --thread-summary "2-4 sentence compressed summary"
 ```
 
-Archive the current task after it is done:
+Archive the current task manually after it is done:
 
 ```powershell
 python tools\worktree-context-reuse-v1\context_sidecar.py archive

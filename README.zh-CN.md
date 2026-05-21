@@ -21,6 +21,20 @@
 - `worktree-intake` / `worktree-handoff`
   用自然语言触发的 skill 入口，用来恢复和保存当前任务上下文
 
+## 实际应该怎么用
+
+这套方案的主要入口应该是对话，而不是手动敲命令。
+
+理想中的实际使用方式应该像这样：
+
+- `接手这个 worktree，告诉我现在做到哪了`
+- `继续这个 feature，恢复一下当前上下文`
+- `我准备提 PR，先同步一下当前状态并做 handoff`
+- `结束这轮开发，把 next step 和记交接都存一下`
+- `这个任务做完了，归档当前任务状态`
+
+也就是说，skill 应该在后台自动同步 sidecar。Python 脚本是 skill 背后的实现层，同时也保留为测试和调试时的备用入口。
+
 ## 仓库结构
 
 ```text
@@ -55,33 +69,15 @@ worktree-context-reuse-v1-usage.md
 
 这些状态是本机私有的，不应该进 feature PR。
 
-## 快速开始
+## 对话优先的快速开始
 
 1. 先补齐 `docs/agent/` 下的稳定事实文档
 2. 把两个 skill 安装或复制到本机 Codex skill 目录
-3. 在真实 git worktree 里运行：
-
-```powershell
-python tools\worktree-context-reuse-v1\context_sidecar.py init
-python tools\worktree-context-reuse-v1\context_sidecar.py snapshot
-python tools\worktree-context-reuse-v1\context_sidecar.py intake
-```
-
-4. 每轮工作结束前写一次 handoff：
-
-```powershell
-python tools\worktree-context-reuse-v1\context_sidecar.py handoff `
-  --goal "current goal" `
-  --status active `
-  --next-step "next concrete step" `
-  --thread-summary "2-4 sentence compressed summary"
-```
-
-5. 任务彻底完成后归档：
-
-```powershell
-python tools\worktree-context-reuse-v1\context_sidecar.py archive
-```
+3. 在真实 git worktree 里，优先直接对 agent 说：
+   - `Use $worktree-intake to recover the current worktree context and tell me the next step.`
+4. 每轮工作结束前，对 agent 说：
+   - `Use $worktree-handoff to save the current worktree status and prepare the next agent handoff.`
+5. 任务彻底完成后，让 agent 归档当前任务
 
 ## Skill 用法
 
@@ -89,6 +85,26 @@ python tools\worktree-context-reuse-v1\context_sidecar.py archive
 
 - `Use $worktree-intake to recover the current worktree context and tell me the next step.`
 - `Use $worktree-handoff to save the current worktree status and prepare the next agent handoff.`
+
+也可以直接说更自然的话，比如：
+
+- `接手当前 worktree，恢复一下上下文`
+- `继续这个分支，告诉我下一步做什么`
+- `提 PR 前先帮我同步当前状态`
+- `结束今天这轮，给下一个 agent 留个交接`
+- `这个任务结束了，归档掉当前状态`
+
+## 底层 CLI
+
+仓库里仍然保留了 Python CLI，方便测试、调试和非 skill 集成：
+
+```powershell
+python tools\worktree-context-reuse-v1\context_sidecar.py init
+python tools\worktree-context-reuse-v1\context_sidecar.py snapshot
+python tools\worktree-context-reuse-v1\context_sidecar.py intake
+python tools\worktree-context-reuse-v1\context_sidecar.py handoff ...
+python tools\worktree-context-reuse-v1\context_sidecar.py archive
+```
 
 ## 当前验证状态
 
