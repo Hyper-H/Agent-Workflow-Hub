@@ -531,7 +531,6 @@ def try_create_pr(
     args: argparse.Namespace,
 ) -> dict[str, Any]:
     title, body = build_pr_text(task, manager, args)
-    status = gh_status()
     guidance = "Install and authenticate GitHub CLI, then rerun finish-feature --create-pr if you want Codex to create the PR."
     result: dict[str, Any] = {
         "requested": bool(args.create_pr),
@@ -539,13 +538,21 @@ def try_create_pr(
         "prUrl": task.get("prUrl", ""),
         "title": title,
         "body": body,
-        "gh": status,
+        "gh": {
+            "checked": False,
+            "available": None,
+            "authenticated": None,
+            "path": "",
+            "message": "GitHub CLI was not checked because PR creation was not requested.",
+        },
         "guidance": "",
     }
 
     if not args.create_pr:
         result["guidance"] = "PR creation was not requested; use the generated title/body manually or rerun with --create-pr."
         return result
+    status = gh_status()
+    result["gh"] = status
     if not status["available"] or not status["authenticated"]:
         result["guidance"] = guidance
         return result
