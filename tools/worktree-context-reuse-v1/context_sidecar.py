@@ -179,11 +179,12 @@ class SidecarManager:
         if rc != 0 or not branch:
             branch = "unknown"
 
-        rc, base_branch, _ = run_git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], repo_root_path)
-        if rc != 0 or not base_branch:
-            base_branch = "main"
-        if "/" in base_branch:
-            base_branch = base_branch.split("/", 1)[1]
+        base_branch = self._remote_default_branch(repo_root_path, "origin")
+        if not base_branch:
+            rc, upstream_remote, _ = run_git(["config", f"branch.{branch}.remote"], repo_root_path)
+            if rc == 0 and upstream_remote and upstream_remote != "origin":
+                base_branch = self._remote_default_branch(repo_root_path, upstream_remote)
+        base_branch = base_branch or "main"
 
         rc, recent_commits_raw, _ = run_git(
             ["log", "--oneline", "-5"],
@@ -205,6 +206,13 @@ class SidecarManager:
             git_status_summary=status_lines,
             pr_url="",
         )
+
+    def _remote_default_branch(self, repo_root_path: Path, remote: str) -> str:
+        rc, remote_head, _ = run_git(["symbolic-ref", "--short", f"refs/remotes/{remote}/HEAD"], repo_root_path)
+        if rc != 0 or not remote_head:
+            return ""
+        prefix = f"{remote}/"
+        return remote_head[len(prefix) :] if remote_head.startswith(prefix) else remote_head
 
     def ensure_layout(self) -> None:
         self.sidecar_root.mkdir(parents=True, exist_ok=True)
