@@ -50,6 +50,7 @@ def compact_task(task: dict[str, Any]) -> dict[str, Any]:
         "baseBranch": task.get("baseBranch", ""),
         "worktreePath": task.get("worktreePath", ""),
         "prUrl": task.get("prUrl", ""),
+        "prSearchUrl": task.get("prSearchUrl", ""),
         "touchedAreas": task.get("touchedAreas", []),
         "nextStep": task.get("nextStep", ""),
         "blocker": task.get("blocker", ""),
@@ -154,6 +155,7 @@ class GitContext:
     touched_files: list[str]
     git_status_summary: list[str]
     pr_url: str
+    pr_search_url: str
 
 
 class SidecarManager:
@@ -195,6 +197,10 @@ class SidecarManager:
         rc, status_raw, _ = run_git(["status", "--short"], repo_root_path)
         status_lines = [line for line in status_raw.splitlines() if line] if rc == 0 else []
         touched_files = [line[3:] for line in status_lines if len(line) >= 4]
+        pr_search_url = ""
+        rc, remote_url, _ = run_git(["remote", "get-url", "origin"], repo_root_path)
+        if rc == 0 and remote_url:
+            pr_search_url = self._guess_pr_search_url(remote_url, branch)
 
         return GitContext(
             repo_root=repo_root_path,
@@ -205,6 +211,7 @@ class SidecarManager:
             touched_files=touched_files,
             git_status_summary=status_lines,
             pr_url="",
+            pr_search_url=pr_search_url,
         )
 
     def _remote_default_branch(self, repo_root_path: Path, remote: str) -> str:
@@ -213,6 +220,16 @@ class SidecarManager:
             return ""
         prefix = f"{remote}/"
         return remote_head[len(prefix) :] if remote_head.startswith(prefix) else remote_head
+
+    def _guess_pr_search_url(self, remote_url: str, branch: str) -> str:
+        normalized = remote_url.strip()
+        if normalized.startswith("git@github.com:"):
+            normalized = normalized.replace("git@github.com:", "https://github.com/")
+        if normalized.endswith(".git"):
+            normalized = normalized[:-4]
+        if normalized.startswith("https://github.com/") and branch and branch != "unknown":
+            return f"{normalized}/pulls?q=is%3Apr+head%3A{branch}"
+        return ""
 
     def ensure_layout(self) -> None:
         self.sidecar_root.mkdir(parents=True, exist_ok=True)
@@ -261,6 +278,7 @@ class SidecarManager:
             "currentBranch": self.git.branch,
             "currentWorktree": str(self.git.worktree_path),
             "lastKnownPrUrl": self.git.pr_url,
+            "prSearchUrl": self.git.pr_search_url,
             "stableDocs": stable_doc_status(self.git.repo_root),
         }
         write_json(self.project_state_path, state)
@@ -332,6 +350,7 @@ class SidecarManager:
             "baseBranch": self.git.base_branch,
             "worktreePath": str(self.git.worktree_path),
             "prUrl": self.git.pr_url,
+            "prSearchUrl": self.git.pr_search_url,
             "touchedAreas": self.default_touched_areas(),
             "nextStep": "",
             "blocker": "",
@@ -372,6 +391,7 @@ class SidecarManager:
             task["prUrl"] = args.pr_url
         elif not task.get("prUrl"):
             task["prUrl"] = self.git.pr_url
+        task["prSearchUrl"] = self.git.pr_search_url
 
         touched_areas = getattr(args, "touched_areas", None)
         if touched_areas:
@@ -394,10 +414,13 @@ class SidecarManager:
     def task_snapshot(self, task: dict[str, Any], conflicts: list[str] | None = None) -> dict[str, Any]:
         handoff_path = self.handoff_path_for(task)
         handoff_available = handoff_path.exists()
+        task_output = compact_task(task)
+        if not task_output.get("prSearchUrl"):
+            task_output["prSearchUrl"] = self.git.pr_search_url
         return {
             "projectId": self.project_id,
             "sidecarRoot": str(self.sidecar_root),
-            "task": compact_task(task),
+            "task": task_output,
             "handoffPath": str(handoff_path),
             "handoffAvailable": handoff_available,
             "projectStatePath": str(self.project_state_path),
@@ -424,6 +447,7 @@ def build_handoff_markdown(task: dict[str, Any], args: argparse.Namespace, manag
     key_files = [item.strip() for item in (args.key_files or manager.git.touched_files[:8]) if item.strip()]
     touched_areas = task.get("touchedAreas") or manager.default_touched_areas()
     pr_url = task.get("prUrl") or manager.git.pr_url or ""
+    pr_search_url = task.get("prSearchUrl") or manager.git.pr_search_url or ""
     validation_tests = args.validation_tests or "not run"
     validation_manual = args.validation_manual or "not run"
     validation_notes = args.validation_notes or ""
@@ -439,6 +463,7 @@ def build_handoff_markdown(task: dict[str, Any], args: argparse.Namespace, manag
         f"- Base Branch: {task.get('baseBranch') or manager.git.base_branch}",
         f"- Worktree: {task.get('worktreePath') or str(manager.git.worktree_path)}",
         f"- PR: {pr_url or 'None'}",
+        f"- PR Search: {pr_search_url or 'None'}",
         f"- Updated At: {task.get('updatedAt') or now_iso()}",
         "",
         "## Current Objective",
@@ -719,6 +744,7 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
         "touchedFiles": manager.git.touched_files,
         "touchedAreas": manager.default_touched_areas(),
         "prUrl": manager.git.pr_url,
+        "prSearchUrl": manager.git.pr_search_url,
         "stableDocs": stable_doc_status(manager.git.repo_root),
     }
     print(json.dumps(snapshot, ensure_ascii=False, indent=2))
@@ -745,6 +771,7 @@ def cmd_intake(args: argparse.Namespace) -> int:
         "branch": task.get("branch", manager.git.branch),
         "worktreePath": task.get("worktreePath", str(manager.git.worktree_path)),
         "prUrl": task.get("prUrl", ""),
+        "prSearchUrl": task.get("prSearchUrl") or manager.git.pr_search_url,
         "touchedAreas": task.get("touchedAreas", []),
         "nextStep": task.get("nextStep", ""),
         "blocker": task.get("blocker", ""),
