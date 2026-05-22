@@ -558,14 +558,27 @@ def try_create_pr(
     if args.draft:
         command.append("--draft")
 
-    proc = subprocess.run(
-        command,
-        cwd=str(manager.git.repo_root),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
+    gh_env = os.environ.copy()
+    gh_env["GH_PROMPT_DISABLED"] = "1"
+    try:
+        proc = subprocess.run(
+            command,
+            cwd=str(manager.git.repo_root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=gh_env,
+            stdin=subprocess.DEVNULL,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired as exc:
+        result["guidance"] = (
+            "GitHub CLI timed out while creating the PR. The feature was still finished locally; "
+            "use the generated title/body or rerun after checking gh setup."
+        )
+        result["ghError"] = "\n".join(part for part in [exc.stdout or "", exc.stderr or ""] if part)
+        return result
     if proc.returncode == 0:
         pr_url = proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else ""
         result["created"] = True
