@@ -750,7 +750,14 @@ def cmd_start_feature(args: argparse.Namespace) -> int:
     started_at = time.perf_counter()
     manager = SidecarManager(Path(args.worktree or os.getcwd()))
     payload = manager.load_active_tasks()
-    task, conflicts = manager.find_task(payload)
+    tasks = payload.get("tasks", [])
+    task = next((item for item in tasks if item.get("branch") == manager.git.branch), None)
+    conflicts = [
+        item.get("taskId", "<unknown>")
+        for item in tasks
+        if item.get("worktreePath") == str(manager.git.worktree_path)
+        and item.get("branch") != manager.git.branch
+    ]
     sidecar_hit = task is not None
     task = manager.upsert_task(payload, task, args)
     manager.save_active_tasks(payload)
