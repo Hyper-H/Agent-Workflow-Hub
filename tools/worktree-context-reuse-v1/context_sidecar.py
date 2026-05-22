@@ -17,6 +17,7 @@ from typing import Any
 
 VALID_STATUSES = {"active", "paused", "blocked", "review"}
 SIDECAR_VERSION = 2
+GH_AUTH_STATUS_TIMEOUT_SECONDS = 15
 
 
 def now_iso() -> str:
@@ -39,6 +40,22 @@ def short_text(value: str, max_len: int = 240) -> str:
 
 def elapsed_ms(started_at: float) -> int:
     return int((time.perf_counter() - started_at) * 1000)
+
+
+def subprocess_timeout_output(exc: subprocess.TimeoutExpired) -> str:
+    parts = []
+    for part in [exc.stdout, exc.stderr]:
+        if not part:
+            continue
+        if isinstance(part, bytes):
+            part = part.decode("utf-8", errors="replace")
+        parts.append(str(part).strip())
+    return "\n".join(part for part in parts if part)
+
+
+def default_weekly_period() -> str:
+    iso_year, iso_week, _ = datetime.now().isocalendar()
+    return f"{iso_year}-W{iso_week:02d}"
 
 
 def compact_task(task: dict[str, Any]) -> dict[str, Any]:
@@ -542,13 +559,28 @@ def gh_status() -> dict[str, Any]:
             "message": "GitHub CLI is not installed or not on PATH.",
         }
 
-    proc = subprocess.run(
-        [gh_path, "auth", "status"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
+    gh_env = os.environ.copy()
+    gh_env["GH_PROMPT_DISABLED"] = "1"
+    try:
+        proc = subprocess.run(
+            [gh_path, "auth", "status"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=gh_env,
+            stdin=subprocess.DEVNULL,
+            timeout=GH_AUTH_STATUS_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        output = subprocess_timeout_output(exc)
+        return {
+            "available": True,
+            "authenticated": False,
+            "path": gh_path,
+            "timedOut": True,
+            "message": output or "GitHub CLI auth status timed out.",
+        }
     output = "\n".join(part for part in [proc.stdout.strip(), proc.stderr.strip()] if part)
     return {
         "available": True,
@@ -628,7 +660,7 @@ def try_create_pr(
             "GitHub CLI timed out while creating the PR. The feature was still finished locally; "
             "use the generated title/body or archived task JSON after checking gh setup."
         )
-        result["ghError"] = "\n".join(part for part in [exc.stdout or "", exc.stderr or ""] if part)
+        result["ghError"] = subprocess_timeout_output(exc)
         return result
     if proc.returncode == 0:
         pr_url = proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else ""
@@ -1029,7 +1061,7 @@ def cmd_weekly_report(args: argparse.Namespace) -> int:
     manager = SidecarManager(Path(args.worktree or os.getcwd()))
     payload = manager.load_active_tasks()
     state = manager.write_project_state(payload.get("tasks", []))
-    period = safe_filename_label(args.period or datetime.now().strftime("%G-W%V"), "weekly-report")
+    period = safe_filename_label(args.period or default_weekly_period(), "weekly-report")
     report_name = f"{period}-{manager.project_id}.md"
     report_path = manager.reports_dir / report_name
     report_path.write_text(build_weekly_report(manager, state, period), encoding="utf-8")
