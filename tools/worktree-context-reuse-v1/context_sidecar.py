@@ -508,13 +508,13 @@ def build_handoff_markdown(task: dict[str, Any], args: argparse.Namespace, manag
     validation_tests = args.validation_tests or "not run"
     validation_manual = args.validation_manual or "not run"
     validation_notes = args.validation_notes or ""
-    current_objective = args.current_objective or task.get("goal") or "待补充当前目标"
+    current_objective = args.current_objective or task.get("goal") or "Current objective not recorded."
 
     lines = [
         f"# Handoff: {task['taskId']}",
         "",
         "## Meta",
-        f"- Goal: {task.get('goal') or '待补充目标'}",
+        f"- Goal: {task.get('goal') or 'Goal not recorded.'}",
         f"- Status: {task.get('status') or 'active'}",
         f"- Branch: {task.get('branch') or manager.git.branch}",
         f"- Base Branch: {task.get('baseBranch') or manager.git.base_branch}",
@@ -535,7 +535,7 @@ def build_handoff_markdown(task: dict[str, Any], args: argparse.Namespace, manag
     lines.extend([f"- {item}" for item in touched_areas] or ["- None"])
     lines.extend(["", "## Key Files"])
     lines.extend([f"- {item}" for item in key_files] or ["- None"])
-    lines.extend(["", "## Suggested Next Step", f"- {task.get('nextStep') or '待补充下一步'}"])
+    lines.extend(["", "## Suggested Next Step", f"- {task.get('nextStep') or 'Next step not recorded.'}"])
     lines.extend(
         [
             "",
@@ -548,7 +548,7 @@ def build_handoff_markdown(task: dict[str, Any], args: argparse.Namespace, manag
         ]
     )
     lines.extend([f"- {item}" for item in risk_items] or ["- None"])
-    lines.extend(["", "## Thread Summary", task.get("lastThreadSummary") or "待补充 thread 摘要", ""])
+    lines.extend(["", "## Thread Summary", task.get("lastThreadSummary") or "Thread summary not recorded.", ""])
     return "\n".join(lines)
 
 
