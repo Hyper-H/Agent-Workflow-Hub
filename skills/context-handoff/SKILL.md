@@ -9,26 +9,17 @@ Use this skill when the user wants to start, resume, hand off, finish, inspect, 
 
 ## Implementation Layer
 
-Resolve the sidecar CLI before running an action. Do not ask the user to paste the CLI path during normal use.
+Use the bundled sidecar CLI in this skill package. Do not ask the user to paste a CLI path during normal use.
 
-CLI resolution order:
-
-1. If `CONTEXT_HANDOFF_CLI` is set, use that absolute path.
-2. If the current repository contains `tools/worktree-context-reuse-v1/context_sidecar.py`, use that path.
-3. If `%USERPROFILE%\Documents\context-handoff\tools\worktree-context-reuse-v1\context_sidecar.py` exists, use that path as the local installed development copy.
-4. If none of the above exists, explain that the sidecar CLI is not installed and ask the user to install or clone `context-handoff`.
-
-When using a CLI outside the current repository, pass the current worktree explicitly:
+Run actions through:
 
 ```powershell
-python <resolved-context-sidecar.py> <action> --worktree <current-worktree>
+python scripts\context_sidecar.py <action> --worktree <current-worktree>
 ```
 
-When using the current repository's bundled CLI, running from the repository root is also valid:
+If the current working directory is the installed skill directory, use the relative script path above. If running from another directory, resolve `scripts\context_sidecar.py` relative to this `SKILL.md` file and pass the user's current repository or worktree through `--worktree`.
 
-```powershell
-python tools\worktree-context-reuse-v1\context_sidecar.py <action>
-```
+The user should only need to say `Use $context-handoff ...`; CLI path resolution is the agent's responsibility.
 
 The sidecar stays local at:
 
@@ -36,7 +27,7 @@ The sidecar stays local at:
 %USERPROFILE%\.codex\projects\<project-id>\
 ```
 
-Do not write dynamic task state into tracked repo docs. Do not require MCP for this V2 workflow.
+Do not write dynamic task state into tracked repo docs. Do not require MCP for this workflow.
 
 ## Actions
 
@@ -51,7 +42,7 @@ Do not write dynamic task state into tracked repo docs. Do not require MCP for t
 
 ## Routing Guide
 
-- Before the first action in a project, resolve the CLI path with the rules above. Prefer `doctor` before `setup` when the project has not used the sidecar before.
+- Before the first action in a project, run the bundled CLI with the current worktree path. Prefer `doctor` before `setup` when the project has not used the sidecar before.
 - If the user says "start this feature", "track this branch", or gives a feature goal, run `start-feature` with `--goal` and optional `--next-step`.
 - If the user says "take over", "resume", "where are we", or "continue this worktree", run `resume-feature`, then summarize only the useful context and next step.
 - If the user is ending a session or passing work to another agent, run `handoff` with concrete done/not-done/validation fields.
@@ -70,10 +61,6 @@ For a useful first sidecar state, combine:
 - Existing PR descriptions, issue text, or release notes when available.
 
 If semantic context is missing, write a provisional task state and say what is missing rather than pretending the git history is enough.
-
-## Compatibility
-
-The existing `worktree-intake` and `worktree-handoff` skills remain valid compatibility entry points. Prefer this unified skill for V2 lifecycle work, but do not break established V1 prompts.
 
 ## Output Style
 
