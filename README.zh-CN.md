@@ -2,7 +2,7 @@
 
 中文 | [English](./README.md)
 
-`context-handoff` 是一个自包含的 Codex skill，用来为 AI 辅助 feature 开发维护轻量项目/任务状态。它帮助 agent 在不同 branch、worktree、thread 之间恢复上下文，减少重复扫项目和重复解释。
+`context-handoff` 是一个自包含的 Codex skill，用来维护 AI 辅助 feature 开发中的本地项目和任务状态。它帮助 agent 在 branch、worktree、thread 之间恢复上下文，减少重复扫描和重复解释。
 
 日常入口是对话：
 
@@ -10,14 +10,15 @@
 Use $context-handoff to resume this worktree.
 ```
 
-skill 自带 Python sidecar CLI，位置在 `skills/context-handoff/scripts/`。用户安装 skill 后，不需要知道 CLI 在哪里。
+skill 自带 Python sidecar CLI，位于 `skills/context-handoff/scripts/`。用户安装 skill 后，不需要知道 CLI 在哪里。
 
 ## 解决什么问题
 
 - 新 agent thread 反复扫描同一个仓库。
 - feature branch、worktree、thread 之间丢失任务状态。
-- handoff、完成归档、周报输出不稳定。
-- 动态 agent 状态误写进仓库文档或 feature PR。
+- 多 worktree 项目被拆成多个不相关的本地 projectId。
+- handoff、完成归档、audit、周报输出不一致。
+- 动态 agent 状态误写进目标仓库文档或 feature PR。
 
 ## 安装
 
@@ -45,7 +46,7 @@ python install.py
 Use $context-handoff to run doctor/setup for this project.
 ```
 
-然后就可以自然对话：
+然后可以自然对话：
 
 ```text
 Use $context-handoff to start this feature. Goal: improve the dashboard UI.
@@ -60,11 +61,11 @@ Use $context-handoff to save a handoff before I stop today.
 ```
 
 ```text
-Use $context-handoff to finish this feature and generate PR text.
+Use $context-handoff to audit this context before another agent takes over.
 ```
 
 ```text
-Use $context-handoff to generate last week's report.
+Use $context-handoff to finish this feature and generate PR text.
 ```
 
 ## Sidecar 状态
@@ -73,6 +74,7 @@ Use $context-handoff to generate last week's report.
 
 ```text
 %USERPROFILE%\.codex\projects\<project-id>\
+  config.json
   active-tasks.json
   project-state.json
   handoffs\
@@ -83,34 +85,49 @@ Use $context-handoff to generate last week's report.
 
 `project-state.json` 是给 agent 读的紧凑机器状态。handoff 和 weekly report 是给人读的 Markdown。稳定仓库事实仍然可以放在受版本控制的 `docs/agent/` 中。
 
+projectId 在多个 worktree 之间保持稳定。解析顺序是：
+
+- `--project-id`
+- `CONTEXT_HANDOFF_PROJECT_ID`
+- 已存在的本地 sidecar `config.json`
+- Git remote URL 或 common Git directory
+- repo root 名称兜底
+
+base branch 可以用 `--base-branch dev` 覆盖；该值会持久化到本地 sidecar config，后续 action 会继续使用。
+
 ## 主要动作
 
 - `doctor`：检查 Python、Git、sidecar、可选 GitHub CLI 是否就绪。
-- `setup`：创建本机 sidecar 结构。
+- `setup`：创建本地 sidecar 结构。
 - `start-feature`：把当前 branch/worktree 记录为 active task。
-- `resume-feature`：恢复当前 worktree 的紧凑上下文。
-- `handoff`：保存未完成工作、下一步和阻塞点。
-- `finish-feature`：归档任务并生成 PR 标题/正文；只有在用户明确要求且 GitHub CLI 可用时才创建 PR。
+- `resume-feature`：恢复紧凑上下文、stale detection，并输出 `startThreadSummary`。
+- `handoff`：保存未完成工作、下一步、facts、inferences、unknowns、validation 和 safety rules。
+- `audit-context`：报告缺 handoff、stale git 状态、缺 validation、缺 safetyRules、dirty worktree 和 backfill prompts。
+- `finish-feature`：归档任务并生成 PR 标题/正文；只有用户明确要求且 GitHub CLI 就绪时才创建 PR。
 - `project-status`：为 project hub thread 汇总当前项目状态。
 - `weekly-report`：在 sidecar 的 `reports/` 目录生成给人看的 Markdown 周报。
 
 V1 的 `worktree-intake` 和 `worktree-handoff` 已合并进统一的 `context-handoff` skill，分别对应 `resume-feature` 和 `handoff`。
 
-## 给旧项目补状态
+## 可信 handoff
 
 Git 历史可以恢复客观事实，例如 branch、commit、改动文件和触达目录。它不能可靠恢复目标、设计决策、阻塞点、验证状态或正确下一步。
 
-第一次给旧项目补 sidecar 状态时，建议组合：
+V2.2 handoff 会强制区分：
 
-- 当前 worktree 的 Git 事实。
-- 当前 thread 或用户补充的语义上下文。
-- 已有 PR、issue 或 release notes。
+- `facts`：观察到或用户提供的事实。
+- `inferences`：agent 的推断，必须可检查。
+- `unknowns`：缺失上下文，不应被猜测填补。
+- `safetyRules`：后续 agent 必须遵守的一等约束。
+- `validation`：命令、结果、备注和验证时间。
 
-第一次补录可能多花一点 token。之后持续使用 `start-feature`、`handoff`、`finish-feature`，后续恢复和周报就会更便宜。
+sidecar 也会记录 `headSha`、`upstream`、`dirtyFiles` 和 `dirtyFingerprint`。当 HEAD 或 dirty files 与记录的 task snapshot 不一致时，`resume-feature` 和 `audit-context` 会标记 stale。
 
 ## GitHub PR 行为
 
 GitHub CLI 是可选能力。没有 PR URL 时，`finish-feature` 也能正常完成和归档。如果本机已安装并登录 `gh`，且用户明确要求创建 PR，skill 才会尝试创建 PR。否则它只生成 PR 标题/正文，并记录本地完成状态。
+
+任何非 0 的 `gh auth status` 结果、traceback、`TypeError` 或 exception-like 输出都会被视为未认证。
 
 ## 研究说明
 
