@@ -24,7 +24,15 @@ DOGFOOD_ISSUE_LABELS = ["agent-reported", "needs-triage"]
 SENSITIVE_ISSUE_PATTERNS = [
     r"gho_[A-Za-z0-9_]+",
     r"ghp_[A-Za-z0-9_]+",
+    r"ghs_[A-Za-z0-9_]+",
+    r"ghu_[A-Za-z0-9_]+",
+    r"ghr_[A-Za-z0-9_]+",
+    r"github_pat_[A-Za-z0-9_]+",
     r"sk-[A-Za-z0-9_-]{16,}",
+    r"AKIA[0-9A-Z]{16}",
+    r"(?i)bearer\s+[A-Za-z0-9._~+/=-]{16,}",
+    r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}",
+    r"npm_[A-Za-z0-9]{16,}",
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----",
     r"(?i)\b(api[_-]?key|secret|token|password)\s*[:=]\s*\S+",
     r"(?i)\b(users\\[^\\\s]+\\|/users/[^/\s]+/|/home/[^/\s]+/)",
@@ -1068,8 +1076,9 @@ def issue_search_query(title: str) -> str:
     return " ".join(words[:8]) or title
 
 
-def find_similar_open_issues(manager: SidecarManager, title: str, gh_path: str) -> list[dict[str, Any]]:
+def find_similar_open_issues(manager: SidecarManager, title: str, gh_path: str) -> dict[str, Any]:
     query = issue_search_query(title)
+    result: dict[str, Any] = {"ok": False, "query": query, "issues": [], "message": ""}
     command = [
         gh_path,
         "issue",
@@ -1098,14 +1107,23 @@ def find_similar_open_issues(manager: SidecarManager, title: str, gh_path: str) 
             timeout=30,
         )
     except subprocess.TimeoutExpired:
-        return []
+        result["message"] = "similar issue search timed out"
+        return result
     if proc.returncode != 0 or not proc.stdout.strip():
-        return []
+        result["message"] = "\n".join(part for part in [proc.stdout.strip(), proc.stderr.strip()] if part) or "similar issue search failed"
+        return result
     try:
         data = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        return []
-    return data if isinstance(data, list) else []
+    except json.JSONDecodeError as exc:
+        result["message"] = f"similar issue search returned invalid JSON: {exc}"
+        return result
+    if not isinstance(data, list):
+        result["message"] = "similar issue search returned unexpected JSON"
+        return result
+    result["ok"] = True
+    result["issues"] = data
+    result["message"] = "similar issue search completed"
+    return result
 
 
 def try_create_issue(manager: SidecarManager, title: str, body: str, args: argparse.Namespace) -> dict[str, Any]:
@@ -1120,6 +1138,7 @@ def try_create_issue(manager: SidecarManager, title: str, body: str, args: argpa
         "gh": status,
         "sensitiveFindings": sensitive_findings,
         "similarOpenIssues": [],
+        "similarIssueSearch": {"ok": None, "query": "", "message": "not checked"},
         "guidance": "",
     }
     if sensitive_findings:
@@ -1130,7 +1149,16 @@ def try_create_issue(manager: SidecarManager, title: str, body: str, args: argpa
         return result
 
     gh_path = status["path"]
-    similar_issues = find_similar_open_issues(manager, title, gh_path)
+    search_result = find_similar_open_issues(manager, title, gh_path)
+    result["similarIssueSearch"] = {
+        "ok": search_result.get("ok", False),
+        "query": search_result.get("query", ""),
+        "message": search_result.get("message", ""),
+    }
+    if not search_result.get("ok", False):
+        result["guidance"] = "Similar issue search failed; creation was blocked and a draft was returned."
+        return result
+    similar_issues = search_result.get("issues", [])
     result["similarOpenIssues"] = similar_issues
     if similar_issues and not args.allow_duplicate:
         result["guidance"] = "Similar open issues were found; creation was blocked to avoid duplicates."
@@ -1904,6 +1932,7 @@ def issue_output(manager: SidecarManager, args: argparse.Namespace, *, create: b
     output: dict[str, Any] = {
         "projectId": manager.project_id,
         "dogfoodIssueMode": dogfood_enabled,
+        "creationAuthorization": "explicit-create-action" if create else ("dogfoodIssueMode" if dogfood_enabled else "draft-only"),
         "created": False,
         "draftOnly": True,
         "title": title,
@@ -2074,7 +2103,6 @@ def build_parser() -> argparse.ArgumentParser:
         subparser.add_argument("--suggested-fix", dest="suggested_fix", action="append")
         subparser.add_argument("--priority", default="triage-needed")
         subparser.add_argument("--allow-duplicate", action="store_true")
-        subparser.add_argument("--force", action="store_true", help="Deprecated no-op; create-issue already represents explicit user approval.")
 
     init_parser = subparsers.add_parser("init", help="Initialize the sidecar layout for the current worktree")
     add_common(init_parser)
