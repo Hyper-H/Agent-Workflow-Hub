@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -98,6 +99,12 @@ def compact_task(task: dict[str, Any]) -> dict[str, Any]:
         "touchedAreas": task.get("touchedAreas", []),
         "nextStep": task.get("nextStep", ""),
         "blocker": task.get("blocker", ""),
+        "headSha": task.get("headSha", ""),
+        "upstream": task.get("upstream", ""),
+        "dirtyFiles": task.get("dirtyFiles", []),
+        "dirtyFingerprint": task.get("dirtyFingerprint", ""),
+        "validation": task.get("validation", {}),
+        "safetyRules": task.get("safetyRules", []),
         "updatedAt": task.get("updatedAt", ""),
     }
 
@@ -116,11 +123,70 @@ def unique_nonempty(values: list[str], limit: int | None = None) -> list[str]:
     return result
 
 
+def normalized_note_list(values: list[str] | None, limit: int | None = None, max_len: int = 240) -> list[str]:
+    return unique_nonempty([short_text(item, max_len=max_len) for item in (values or [])], limit=limit)
+
+
+def build_validation_record(args: argparse.Namespace, existing: dict[str, Any] | None = None) -> dict[str, Any]:
+    validation = dict(existing or {})
+    commands = list(validation.get("commands") or [])
+    results = list(validation.get("results") or [])
+    for command in getattr(args, "validation_commands", None) or []:
+        command = command.strip()
+        if command:
+            commands.append({"command": short_text(command, max_len=320), "recordedAt": now_iso()})
+    for result in getattr(args, "validation_results", None) or []:
+        result = result.strip()
+        if result:
+            results.append({"result": short_text(result, max_len=320), "recordedAt": now_iso()})
+    if getattr(args, "validation_tests", None):
+        commands.append({"command": short_text(args.validation_tests, max_len=320), "kind": "tests", "recordedAt": now_iso()})
+    if getattr(args, "validation_manual", None):
+        results.append({"result": short_text(args.validation_manual, max_len=320), "kind": "manual", "recordedAt": now_iso()})
+    if getattr(args, "validation_notes", None):
+        validation["notes"] = short_text(args.validation_notes, max_len=500)
+    if commands:
+        validation["commands"] = commands
+    if results:
+        validation["results"] = results
+    if getattr(args, "validation_at", None):
+        validation["validatedAt"] = args.validation_at
+    elif commands or results or validation.get("notes"):
+        validation.setdefault("validatedAt", now_iso())
+    validation.setdefault("commands", [])
+    validation.setdefault("results", [])
+    validation.setdefault("notes", "")
+    validation.setdefault("validatedAt", "")
+    return validation
+
+
+def stale_detection(task: dict[str, Any], git: GitContext) -> dict[str, Any]:
+    reasons: list[str] = []
+    saved_head = task.get("headSha") or ""
+    saved_dirty = task.get("dirtyFingerprint") or ""
+    if saved_head and git.head_sha and saved_head != git.head_sha:
+        reasons.append("HEAD changed since last recorded handoff/task snapshot")
+    if saved_dirty != git.dirty_fingerprint:
+        reasons.append("dirty files changed since last recorded handoff/task snapshot")
+    return {
+        "isStale": bool(reasons),
+        "reasons": reasons,
+        "recordedHeadSha": saved_head,
+        "currentHeadSha": git.head_sha,
+        "recordedDirtyFingerprint": saved_dirty,
+        "currentDirtyFingerprint": git.dirty_fingerprint,
+    }
+
+
 def safe_filename_label(value: str, fallback: str) -> str:
     value = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip())
     value = re.sub(r"-{2,}", "-", value)
     value = value.strip(".-_")
     return value or fallback
+
+
+def suspicious_cli_output(value: str) -> bool:
+    return bool(re.search(r"(Traceback|TypeError|Exception|stack trace)", value or "", flags=re.IGNORECASE))
 
 
 def find_git_executable() -> str | None:
@@ -165,11 +231,61 @@ def run_git(args: list[str], cwd: Path) -> tuple[int, str, str]:
     return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
 
 
+def run_git_bytes(args: list[str], cwd: Path) -> tuple[int, bytes, bytes]:
+    git_executable = find_git_executable()
+    if not git_executable:
+        return 127, b"", b"git executable not found"
+    try:
+        proc = subprocess.run(
+            [git_executable, *args],
+            cwd=str(cwd),
+            capture_output=True,
+        )
+    except FileNotFoundError:
+        return 127, b"", b"git executable not found"
+    return proc.returncode, proc.stdout, proc.stderr
+
+
 def detect_git_repo(worktree: Path) -> tuple[bool, str]:
     rc, repo_root, _ = run_git(["rev-parse", "--show-toplevel"], worktree)
     if rc != 0 or not repo_root:
         return False, ""
     return True, str(Path(repo_root).resolve())
+
+
+def parse_git_status_porcelain_z(repo_root: Path) -> tuple[list[str], list[str]]:
+    rc, stdout, _ = run_git_bytes(["status", "--porcelain=v1", "-z"], repo_root)
+    if rc != 0 or not stdout:
+        return [], []
+
+    records = [item.decode("utf-8", errors="replace") for item in stdout.split(b"\0") if item]
+    summary: list[str] = []
+    touched: list[str] = []
+    index = 0
+    while index < len(records):
+        record = records[index]
+        status = record[:2] if len(record) >= 2 else record
+        prefix = f"{status} "
+        path = record.removeprefix(prefix).lstrip()
+        if status.startswith(("R", "C")) and index + 1 < len(records):
+            old_path = records[index + 1]
+            summary.append(f"{status} {old_path} -> {path}")
+            touched.extend([old_path, path])
+            index += 2
+            continue
+        summary.append(f"{status} {path}".rstrip())
+        if path:
+            touched.append(path)
+        index += 1
+
+    return summary, unique_nonempty(touched)
+
+
+def fingerprint_dirty_files(status_lines: list[str]) -> str:
+    if not status_lines:
+        return ""
+    payload = "\0".join(sorted(status_lines)).encode("utf-8", errors="replace")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def read_json(path: Path, default: Any) -> Any:
@@ -195,31 +311,115 @@ class GitContext:
     branch: str
     base_branch: str
     worktree_path: Path
+    common_dir: Path | None
+    remote_url: str
+    head_sha: str
+    upstream: str
     recent_commits: list[str]
     touched_files: list[str]
     git_status_summary: list[str]
+    dirty_files: list[str]
+    dirty_fingerprint: str
     pr_url: str
     pr_search_url: str
 
 
 class SidecarManager:
-    def __init__(self, worktree: Path):
+    def __init__(self, worktree: Path, project_id_override: str = "", base_branch_override: str = ""):
         self.worktree = worktree.resolve()
         self.git = self._detect_git_context()
-        self.project_id = slugify(self.git.repo_root.name)
+        self.project_id_source = ""
+        self.base_branch_override = (base_branch_override or "").strip()
+        self.project_id = self._resolve_project_id(project_id_override)
+        if self.base_branch_override:
+            self.git.base_branch = self.base_branch_override
         self.sidecar_root = Path.home() / ".codex" / "projects" / self.project_id
         self.active_tasks_path = self.sidecar_root / "active-tasks.json"
         self.project_state_path = self.sidecar_root / "project-state.json"
+        self.config_path = self.sidecar_root / "config.json"
         self.handoffs_dir = self.sidecar_root / "handoffs"
         self.archive_dir = self.sidecar_root / "archive"
         self.reports_dir = self.sidecar_root / "reports"
         self.events_path = self.sidecar_root / "events.jsonl"
+
+    def _resolve_project_id(self, project_id_override: str = "") -> str:
+        explicit = (project_id_override or "").strip()
+        if explicit:
+            self.project_id_source = "cli"
+            return slugify(explicit)
+
+        env_project_id = os.environ.get("CONTEXT_HANDOFF_PROJECT_ID", "").strip()
+        if env_project_id:
+            self.project_id_source = "env"
+            return slugify(env_project_id)
+
+        sidecar_config_project_id = self._sidecar_config_project_id()
+        if sidecar_config_project_id:
+            self.project_id_source = "sidecar-config"
+            return slugify(sidecar_config_project_id)
+
+        remote_or_common = self._project_id_from_remote_or_common_dir()
+        if remote_or_common:
+            self.project_id_source = "git-remote-common-dir"
+            return remote_or_common
+
+        self.project_id_source = "repo-root"
+        return slugify(self.git.repo_root.name)
+
+    def _sidecar_config_project_id(self) -> str:
+        projects_root = Path.home() / ".codex" / "projects"
+        if not projects_root.exists():
+            return ""
+        current_common_dir = str(self.git.common_dir or "")
+        current_repo_root = str(self.git.repo_root)
+        current_remote = self.git.remote_url.strip()
+        for path in projects_root.glob("*/config.json"):
+            if not path.exists():
+                continue
+            try:
+                payload = read_json(path, {})
+            except (OSError, json.JSONDecodeError):
+                continue
+            project_id = str(payload.get("projectId") or path.parent.name).strip()
+            if not project_id:
+                continue
+            if current_remote and payload.get("remoteUrl") == current_remote:
+                return project_id
+            if current_common_dir and payload.get("gitCommonDir") == current_common_dir:
+                return project_id
+            if payload.get("repoRoot") == current_repo_root:
+                return project_id
+        return ""
+
+    def _project_id_from_remote_or_common_dir(self) -> str:
+        remote_url = self.git.remote_url.strip()
+        if remote_url:
+            normalized = remote_url
+            if normalized.startswith("git@github.com:"):
+                normalized = normalized.replace("git@github.com:", "https://github.com/")
+            if normalized.endswith(".git"):
+                normalized = normalized[:-4]
+            match = re.search(r"github\.com[:/](?P<owner>[^/]+)/(?P<repo>[^/#?]+)", normalized)
+            if match:
+                return slugify(f"{match.group('owner')}-{match.group('repo')}")
+            return slugify(normalized)
+
+        if self.git.common_dir:
+            common_dir = self.git.common_dir
+            name = common_dir.parent.name if common_dir.name == ".git" else common_dir.name
+            return slugify(name)
+        return ""
 
     def _detect_git_context(self) -> GitContext:
         rc, repo_root, _ = run_git(["rev-parse", "--show-toplevel"], self.worktree)
         if rc != 0 or not repo_root:
             repo_root = str(self.worktree)
         repo_root_path = Path(repo_root).resolve()
+
+        common_dir_path: Path | None = None
+        rc, common_dir, _ = run_git(["rev-parse", "--git-common-dir"], repo_root_path)
+        if rc == 0 and common_dir:
+            common_dir_path = (repo_root_path / common_dir).resolve() if not Path(common_dir).is_absolute() else Path(common_dir).resolve()
 
         rc, branch, _ = run_git(["branch", "--show-current"], repo_root_path)
         if rc != 0 or not branch:
@@ -234,17 +434,25 @@ class SidecarManager:
                 base_branch = self._remote_default_branch(repo_root_path, upstream_remote)
         base_branch = base_branch or "main"
 
+        rc, head_sha, _ = run_git(["rev-parse", "HEAD"], repo_root_path)
+        if rc != 0:
+            head_sha = ""
+
+        upstream = self._current_upstream_full(repo_root_path)
+
         rc, recent_commits_raw, _ = run_git(
             ["log", "--oneline", "-5"],
             repo_root_path,
         )
         recent_commits = [line for line in recent_commits_raw.splitlines() if line] if rc == 0 else []
 
-        rc, status_raw, _ = run_git(["status", "--short"], repo_root_path)
-        status_lines = [line for line in status_raw.splitlines() if line] if rc == 0 else []
-        touched_files = [line[3:] for line in status_lines if len(line) >= 4]
+        status_lines, touched_files = parse_git_status_porcelain_z(repo_root_path)
+        dirty_files = touched_files
+        dirty_fingerprint = fingerprint_dirty_files(status_lines)
         pr_search_url = ""
         rc, remote_url, _ = run_git(["remote", "get-url", "origin"], repo_root_path)
+        if rc != 0:
+            remote_url = ""
         if rc == 0 and remote_url:
             pr_search_url = self._guess_pr_search_url(remote_url, branch)
 
@@ -253,9 +461,15 @@ class SidecarManager:
             branch=branch,
             base_branch=base_branch,
             worktree_path=self.worktree,
+            common_dir=common_dir_path,
+            remote_url=remote_url,
+            head_sha=head_sha,
+            upstream=upstream,
             recent_commits=recent_commits,
             touched_files=touched_files,
             git_status_summary=status_lines,
+            dirty_files=dirty_files,
+            dirty_fingerprint=dirty_fingerprint,
             pr_url="",
             pr_search_url=pr_search_url,
         )
@@ -273,6 +487,10 @@ class SidecarManager:
             return ""
         return upstream.split("/", 1)[1] if "/" in upstream else upstream
 
+    def _current_upstream_full(self, repo_root_path: Path) -> str:
+        rc, upstream, _ = run_git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], repo_root_path)
+        return upstream if rc == 0 else ""
+
     def _guess_pr_search_url(self, remote_url: str, branch: str) -> str:
         normalized = remote_url.strip()
         if normalized.startswith("git@github.com:"):
@@ -288,11 +506,49 @@ class SidecarManager:
         self.handoffs_dir.mkdir(parents=True, exist_ok=True)
         self.archive_dir.mkdir(parents=True, exist_ok=True)
         self.reports_dir.mkdir(parents=True, exist_ok=True)
+        if not self.config_path.exists():
+            write_json(
+                self.config_path,
+                {
+                    "version": SIDECAR_VERSION,
+                    "projectId": self.project_id,
+                    "projectIdSource": self.project_id_source,
+                    "baseBranch": self.base_branch_override or self.git.base_branch,
+                    "repoRoot": str(self.git.repo_root),
+                    "gitCommonDir": str(self.git.common_dir) if self.git.common_dir else "",
+                    "remoteUrl": self.git.remote_url,
+                    "updatedAt": now_iso(),
+                },
+            )
         if not self.active_tasks_path.exists():
             write_json(
                 self.active_tasks_path,
                 {"version": SIDECAR_VERSION, "projectId": self.project_id, "tasks": []},
             )
+
+    def sidecar_config(self) -> dict[str, Any]:
+        self.ensure_layout()
+        config = read_json(self.config_path, {})
+        config.setdefault("version", SIDECAR_VERSION)
+        config.setdefault("projectId", self.project_id)
+        if self.base_branch_override:
+            config["baseBranch"] = self.base_branch_override
+            write_json(self.config_path, {**config, "updatedAt": now_iso()})
+            self.git.base_branch = self.base_branch_override
+        elif config.get("baseBranch"):
+            self.git.base_branch = config["baseBranch"]
+        return config
+
+    def save_sidecar_config(self, **updates: Any) -> None:
+        config = self.sidecar_config()
+        config.update({key: value for key, value in updates.items() if value is not None})
+        config["version"] = SIDECAR_VERSION
+        config["projectId"] = self.project_id
+        config["repoRoot"] = str(self.git.repo_root)
+        config["gitCommonDir"] = str(self.git.common_dir) if self.git.common_dir else ""
+        config["remoteUrl"] = self.git.remote_url
+        config["updatedAt"] = now_iso()
+        write_json(self.config_path, config)
 
     def load_active_tasks(self) -> dict[str, Any]:
         self.ensure_layout()
@@ -303,8 +559,24 @@ class SidecarManager:
         payload.setdefault("version", SIDECAR_VERSION)
         payload.setdefault("projectId", self.project_id)
         payload.setdefault("tasks", [])
+        config = self.sidecar_config()
+        if self.base_branch_override:
+            self.save_sidecar_config(baseBranch=self.base_branch_override)
+            self.git.base_branch = self.base_branch_override
+        elif config.get("baseBranch"):
+            self.git.base_branch = str(config["baseBranch"])
         for task in payload.get("tasks", []):
             normalize_task_pr_fields(task)
+            task.setdefault("baseBranch", self.git.base_branch)
+            task.setdefault("headSha", "")
+            task.setdefault("upstream", "")
+            task.setdefault("dirtyFiles", [])
+            task.setdefault("dirtyFingerprint", "")
+            task.setdefault("validation", {})
+            task.setdefault("facts", [])
+            task.setdefault("inferences", [])
+            task.setdefault("unknowns", [])
+            task.setdefault("safetyRules", [])
         if not self.project_state_path.exists():
             self.write_project_state(payload.get("tasks", []))
         return payload
@@ -324,13 +596,19 @@ class SidecarManager:
         state = {
             "version": SIDECAR_VERSION,
             "projectId": self.project_id,
+            "projectIdSource": self.project_id_source,
             "repoRoot": str(self.git.repo_root),
             "sidecarRoot": str(self.sidecar_root),
             "updatedAt": now_iso(),
             "activeTaskCount": len(active_like_tasks),
             "activeTasks": active_like_tasks,
             "currentBranch": self.git.branch,
+            "baseBranch": self.git.base_branch,
             "currentWorktree": str(self.git.worktree_path),
+            "headSha": self.git.head_sha,
+            "upstream": self.git.upstream,
+            "dirtyFiles": self.git.dirty_files,
+            "dirtyFingerprint": self.git.dirty_fingerprint,
             "lastKnownPrUrl": self.git.pr_url,
             "prSearchUrl": self.git.pr_search_url,
             "stableDocs": stable_doc_status(self.git.repo_root),
@@ -403,12 +681,22 @@ class SidecarManager:
             "branch": self.git.branch,
             "baseBranch": self.git.base_branch,
             "worktreePath": str(self.git.worktree_path),
+            "repoRoot": str(self.git.repo_root),
+            "headSha": self.git.head_sha,
+            "upstream": self.git.upstream,
+            "dirtyFiles": self.git.dirty_files,
+            "dirtyFingerprint": self.git.dirty_fingerprint,
             "prUrl": self.git.pr_url,
             "prSearchUrl": self.git.pr_search_url,
             "touchedAreas": self.default_touched_areas(),
             "nextStep": "",
             "blocker": "",
             "lastThreadSummary": "",
+            "facts": [],
+            "inferences": [],
+            "unknowns": [],
+            "safetyRules": [],
+            "validation": {"commands": [], "results": [], "notes": "", "validatedAt": ""},
             "updatedAt": now_iso(),
         }
 
@@ -456,9 +744,34 @@ class SidecarManager:
         elif not task.get("touchedAreas"):
             task["touchedAreas"] = self.default_touched_areas()
 
+        for field, arg_name in [
+            ("facts", "facts"),
+            ("inferences", "inferences"),
+            ("unknowns", "unknowns"),
+            ("safetyRules", "safety_rules"),
+        ]:
+            values = normalized_note_list(getattr(args, arg_name, None), limit=20, max_len=320)
+            if values:
+                task[field] = unique_nonempty([*task.get(field, []), *values], limit=30)
+            else:
+                task.setdefault(field, [])
+
+        if any(
+            getattr(args, name, None)
+            for name in ["validation_commands", "validation_results", "validation_tests", "validation_manual", "validation_notes", "validation_at"]
+        ):
+            task["validation"] = build_validation_record(args, task.get("validation") or {})
+        else:
+            task.setdefault("validation", {"commands": [], "results": [], "notes": "", "validatedAt": ""})
+
         task["branch"] = self.git.branch
         task["baseBranch"] = self.git.base_branch
         task["worktreePath"] = str(self.git.worktree_path)
+        task["repoRoot"] = str(self.git.repo_root)
+        task["headSha"] = self.git.head_sha
+        task["upstream"] = self.git.upstream
+        task["dirtyFiles"] = self.git.dirty_files
+        task["dirtyFingerprint"] = self.git.dirty_fingerprint
         task["updatedAt"] = now_iso()
         return task
 
@@ -505,10 +818,16 @@ def build_handoff_markdown(task: dict[str, Any], args: argparse.Namespace, manag
         task.get("prSearchUrl"),
         manager.git.pr_search_url,
     )
-    validation_tests = args.validation_tests or "not run"
-    validation_manual = args.validation_manual or "not run"
-    validation_notes = args.validation_notes or ""
+    validation = task.get("validation") or build_validation_record(args, {})
+    validation_commands = validation.get("commands") or []
+    validation_results = validation.get("results") or []
+    validation_notes = validation.get("notes") or ""
+    validation_at = validation.get("validatedAt") or ""
     current_objective = args.current_objective or task.get("goal") or "Current objective not recorded."
+    facts = task.get("facts") or []
+    inferences = task.get("inferences") or []
+    unknowns = task.get("unknowns") or []
+    safety_rules = task.get("safetyRules") or []
 
     lines = [
         f"# Handoff: {task['taskId']}",
@@ -519,6 +838,9 @@ def build_handoff_markdown(task: dict[str, Any], args: argparse.Namespace, manag
         f"- Branch: {task.get('branch') or manager.git.branch}",
         f"- Base Branch: {task.get('baseBranch') or manager.git.base_branch}",
         f"- Worktree: {task.get('worktreePath') or str(manager.git.worktree_path)}",
+        f"- Head SHA: {task.get('headSha') or manager.git.head_sha or 'unknown'}",
+        f"- Upstream: {task.get('upstream') or manager.git.upstream or 'None'}",
+        f"- Dirty Fingerprint: {task.get('dirtyFingerprint') or 'clean'}",
         f"- PR: {pr_url or 'None'}",
         f"- PR Search: {pr_search_url or 'None'}",
         f"- Updated At: {task.get('updatedAt') or now_iso()}",
@@ -526,8 +848,19 @@ def build_handoff_markdown(task: dict[str, Any], args: argparse.Namespace, manag
         "## Current Objective",
         current_objective,
         "",
-        "## Done",
+        "## Facts",
     ]
+    lines.extend([f"- {item}" for item in facts] or ["- None recorded"])
+    lines.extend(["", "## Inferences"])
+    lines.extend([f"- {item}" for item in inferences] or ["- None recorded"])
+    lines.extend(["", "## Unknowns"])
+    lines.extend([f"- {item}" for item in unknowns] or ["- None recorded"])
+    lines.extend(["", "## Safety Rules"])
+    lines.extend([f"- {item}" for item in safety_rules] or ["- None recorded"])
+    lines.extend([
+        "",
+        "## Done",
+    ])
     lines.extend([f"- {item}" for item in done_items] or ["- None"])
     lines.extend(["", "## Not Done"])
     lines.extend([f"- {item}" for item in not_done_items] or ["- None"])
@@ -540,8 +873,15 @@ def build_handoff_markdown(task: dict[str, Any], args: argparse.Namespace, manag
         [
             "",
             "## Validation Status",
-            f"- Tests: {validation_tests}",
-            f"- Manual Check: {validation_manual}",
+            f"- Validated At: {validation_at or 'Not recorded'}",
+            "- Commands:",
+        ]
+    )
+    lines.extend([f"  - {item.get('command')}: {item.get('recordedAt', 'time not recorded')}" for item in validation_commands] or ["  - None"])
+    lines.extend(["- Results:"])
+    lines.extend([f"  - {item.get('result')}: {item.get('recordedAt', 'time not recorded')}" for item in validation_results] or ["  - None"])
+    lines.extend(
+        [
             f"- Notes: {validation_notes or 'None'}",
             "",
             "## Risks",
@@ -570,6 +910,22 @@ def build_pr_text(task: dict[str, Any], manager: SidecarManager, args: argparse.
     ]
     body = args.pr_body or "\n".join(body_lines)
     return title, body
+
+
+def build_start_thread_summary(
+    manager: SidecarManager,
+    task: dict[str, Any],
+    handoff_available: bool,
+    stale: dict[str, Any],
+) -> str:
+    pieces = [
+        f"Task {task.get('taskId')} on {task.get('branch') or manager.git.branch}.",
+        f"Goal: {task.get('goal') or 'not recorded'}.",
+        f"Next step: {task.get('nextStep') or 'not recorded'}.",
+        f"Handoff: {'available' if handoff_available else 'missing'}.",
+        f"Stale: {'yes' if stale.get('isStale') else 'no'}.",
+    ]
+    return " ".join(pieces)
 
 
 def pr_base_for_create(task: dict[str, Any], manager: SidecarManager, explicit_base: str | None) -> str:
@@ -614,11 +970,13 @@ def gh_status() -> dict[str, Any]:
             "message": output or "GitHub CLI auth status timed out.",
         }
     output = "\n".join(part for part in [proc.stdout.strip(), proc.stderr.strip()] if part)
+    authenticated = proc.returncode == 0 and not suspicious_cli_output(output)
     return {
         "available": True,
-        "authenticated": proc.returncode == 0,
+        "authenticated": authenticated,
         "path": gh_path,
-        "message": output or ("authenticated" if proc.returncode == 0 else "not authenticated"),
+        "message": output or ("authenticated" if authenticated else "not authenticated"),
+        "exitCode": proc.returncode,
     }
 
 
@@ -794,9 +1152,17 @@ def build_weekly_report(manager: SidecarManager, state: dict[str, Any], period: 
     return "\n".join(lines) + "\n"
 
 
+def make_manager(args: argparse.Namespace) -> SidecarManager:
+    return SidecarManager(
+        Path(getattr(args, "worktree", None) or os.getcwd()),
+        project_id_override=getattr(args, "project_id", "") or "",
+        base_branch_override=getattr(args, "base_branch", "") or "",
+    )
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     started_at = time.perf_counter()
-    manager = SidecarManager(Path(args.worktree or os.getcwd()))
+    manager = make_manager(args)
     manager.ensure_layout()
     payload = manager.load_active_tasks()
     manager.log_event("setup", started_at=started_at, sidecar_hit=True, scan_scope="sidecar-layout")
@@ -818,16 +1184,23 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 
 def cmd_snapshot(args: argparse.Namespace) -> int:
-    manager = SidecarManager(Path(args.worktree or os.getcwd()))
+    manager = make_manager(args)
     snapshot = {
         "projectId": manager.project_id,
+        "projectIdSource": manager.project_id_source,
         "repoRoot": str(manager.git.repo_root),
         "branch": manager.git.branch,
         "baseBranch": manager.git.base_branch,
         "worktreePath": str(manager.git.worktree_path),
+        "gitCommonDir": str(manager.git.common_dir) if manager.git.common_dir else "",
+        "remoteUrl": manager.git.remote_url,
+        "headSha": manager.git.head_sha,
+        "upstream": manager.git.upstream,
         "gitStatusSummary": manager.git.git_status_summary,
         "recentCommits": manager.git.recent_commits,
         "touchedFiles": manager.git.touched_files,
+        "dirtyFiles": manager.git.dirty_files,
+        "dirtyFingerprint": manager.git.dirty_fingerprint,
         "touchedAreas": manager.default_touched_areas(),
         "prUrl": manager.git.pr_url,
         "prSearchUrl": manager.git.pr_search_url,
@@ -839,7 +1212,7 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
 
 def cmd_intake(args: argparse.Namespace) -> int:
     started_at = time.perf_counter()
-    manager = SidecarManager(Path(args.worktree or os.getcwd()))
+    manager = make_manager(args)
     payload = manager.load_active_tasks()
     task, conflicts = manager.find_task(payload)
     provisional = False
@@ -900,7 +1273,7 @@ def cmd_intake(args: argparse.Namespace) -> int:
 
 def cmd_start_feature(args: argparse.Namespace) -> int:
     started_at = time.perf_counter()
-    manager = SidecarManager(Path(args.worktree or os.getcwd()))
+    manager = make_manager(args)
     payload = manager.load_active_tasks()
     tasks = payload.get("tasks", [])
     branch_matches = [item for item in tasks if item.get("branch") == manager.git.branch]
@@ -947,7 +1320,7 @@ def cmd_start_feature(args: argparse.Namespace) -> int:
 
 def cmd_resume_feature(args: argparse.Namespace) -> int:
     started_at = time.perf_counter()
-    manager = SidecarManager(Path(args.worktree or os.getcwd()))
+    manager = make_manager(args)
     payload = manager.load_active_tasks()
     task, conflicts = manager.find_task(payload)
     sidecar_hit = task is not None
@@ -955,12 +1328,19 @@ def cmd_resume_feature(args: argparse.Namespace) -> int:
         task = manager.default_task()
 
     snapshot = manager.task_snapshot(task, conflicts)
+    stale = stale_detection(task, manager.git)
     snapshot.update(
         {
             "stableDocs": stable_doc_status(manager.git.repo_root),
             "gitStatusSummary": manager.git.git_status_summary,
             "recentCommits": manager.git.recent_commits,
             "touchedFiles": manager.git.touched_files,
+            "headSha": manager.git.head_sha,
+            "upstream": manager.git.upstream,
+            "dirtyFiles": manager.git.dirty_files,
+            "dirtyFingerprint": manager.git.dirty_fingerprint,
+            "stale": stale,
+            "startThreadSummary": build_start_thread_summary(manager, task, snapshot["handoffAvailable"], stale),
             "missingContext": [],
             "provisional": not sidecar_hit,
         }
@@ -988,9 +1368,91 @@ def cmd_resume_feature(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_audit_context(args: argparse.Namespace) -> int:
+    started_at = time.perf_counter()
+    manager = make_manager(args)
+    payload = manager.load_active_tasks()
+    task, conflicts = manager.find_task(payload)
+    sidecar_hit = task is not None
+    if task is None:
+        task = manager.default_task()
+
+    handoff_path = manager.handoff_path_for(task)
+    handoff_available = handoff_path.exists()
+    stale = stale_detection(task, manager.git)
+    validation = task.get("validation") or {}
+    missing_validation = not (
+        validation.get("validatedAt")
+        or validation.get("commands")
+        or validation.get("results")
+        or validation.get("notes")
+    )
+    missing_safety_rules = not bool(task.get("safetyRules"))
+    missing_handoff = not handoff_available
+    dirty_worktree = bool(manager.git.dirty_files)
+
+    findings: list[dict[str, Any]] = []
+    if missing_handoff:
+        findings.append({"kind": "missing-handoff", "message": "No latest handoff Markdown exists for the resolved task."})
+    if stale["isStale"]:
+        findings.append({"kind": "stale", "message": "Recorded task snapshot differs from current git state.", "details": stale})
+    if missing_validation:
+        findings.append({"kind": "missing-validation", "message": "No validation time, command, result, or notes are recorded."})
+    if missing_safety_rules:
+        findings.append({"kind": "missing-safety-rules", "message": "No first-class safetyRules are recorded."})
+    if dirty_worktree:
+        findings.append({"kind": "dirty-worktree", "message": "Current worktree has uncommitted changes.", "files": manager.git.dirty_files})
+    if not sidecar_hit:
+        findings.append({"kind": "missing-task", "message": "No sidecar task matched the current branch/worktree."})
+
+    backfill_prompts = []
+    if missing_handoff:
+        backfill_prompts.append("Write a handoff with concrete done/not-done, next step, facts, inferences, unknowns, validation, and safety rules.")
+    if missing_validation:
+        backfill_prompts.append("Record validation command(s), result(s), and validation time after running checks.")
+    if missing_safety_rules:
+        backfill_prompts.append("Record safetyRules that constrain the next agent's edits and repo hygiene.")
+    if stale["isStale"]:
+        backfill_prompts.append("Review current HEAD and dirty files before trusting the previous handoff.")
+    if not task.get("facts"):
+        backfill_prompts.append("Backfill objective facts from git status, recent commits, PR/issue text, or the current thread.")
+    if not task.get("unknowns"):
+        backfill_prompts.append("Name unknowns explicitly instead of filling missing context with guesses.")
+
+    output = {
+        "projectId": manager.project_id,
+        "projectIdSource": manager.project_id_source,
+        "taskId": task.get("taskId", ""),
+        "sidecarRoot": str(manager.sidecar_root),
+        "handoffPath": str(handoff_path),
+        "checks": {
+            "sidecarHit": sidecar_hit,
+            "handoffAvailable": handoff_available,
+            "stale": stale,
+            "validationPresent": not missing_validation,
+            "safetyRulesPresent": not missing_safety_rules,
+            "dirtyWorktree": dirty_worktree,
+        },
+        "findings": findings,
+        "backfillPrompts": unique_nonempty(backfill_prompts),
+        "conflicts": conflicts,
+    }
+    manager.log_event(
+        "audit-context",
+        task_id=task.get("taskId", ""),
+        started_at=started_at,
+        sidecar_hit=sidecar_hit,
+        handoff_available=handoff_available,
+        stale=stale["isStale"],
+        findingCount=len(findings),
+    )
+    print(json.dumps(output, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_handoff(args: argparse.Namespace) -> int:
     started_at = time.perf_counter()
-    manager = SidecarManager(Path(args.worktree or os.getcwd()))
+    manager = make_manager(args)
     payload = manager.load_active_tasks()
     task, _ = manager.find_task(payload)
     sidecar_hit = task is not None
@@ -1032,7 +1494,7 @@ def cmd_handoff(args: argparse.Namespace) -> int:
 
 def cmd_archive(args: argparse.Namespace) -> int:
     started_at = time.perf_counter()
-    manager = SidecarManager(Path(args.worktree or os.getcwd()))
+    manager = make_manager(args)
     payload = manager.load_active_tasks()
     task, _ = manager.find_task(payload)
     if task is None:
@@ -1045,7 +1507,7 @@ def cmd_archive(args: argparse.Namespace) -> int:
 
 def cmd_finish_feature(args: argparse.Namespace) -> int:
     started_at = time.perf_counter()
-    manager = SidecarManager(Path(args.worktree or os.getcwd()))
+    manager = make_manager(args)
     payload = manager.load_active_tasks()
     task, _ = manager.find_task(payload)
     if task is None:
@@ -1074,7 +1536,7 @@ def cmd_finish_feature(args: argparse.Namespace) -> int:
 
 def cmd_project_status(args: argparse.Namespace) -> int:
     started_at = time.perf_counter()
-    manager = SidecarManager(Path(args.worktree or os.getcwd()))
+    manager = make_manager(args)
     payload = manager.load_active_tasks()
     state = manager.write_project_state(payload.get("tasks", []))
     output = {
@@ -1096,7 +1558,7 @@ def cmd_project_status(args: argparse.Namespace) -> int:
 
 def cmd_weekly_report(args: argparse.Namespace) -> int:
     started_at = time.perf_counter()
-    manager = SidecarManager(Path(args.worktree or os.getcwd()))
+    manager = make_manager(args)
     payload = manager.load_active_tasks()
     state = manager.write_project_state(payload.get("tasks", []))
     period = safe_filename_label(args.period or default_weekly_period(), "weekly-report")
@@ -1129,7 +1591,7 @@ def cmd_weekly_report(args: argparse.Namespace) -> int:
 
 def cmd_doctor(args: argparse.Namespace) -> int:
     worktree = Path(args.worktree or os.getcwd())
-    manager = SidecarManager(worktree)
+    manager = make_manager(args)
     git_executable = find_git_executable()
     git_repo_ok, git_repo_root = detect_git_repo(worktree)
     gh = gh_status()
@@ -1183,6 +1645,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     def add_common(subparser: argparse.ArgumentParser) -> None:
         subparser.add_argument("--worktree", help="Target worktree path. Defaults to current directory.")
+        subparser.add_argument("--project-id", help="Override sidecar projectId for multi-worktree projects.")
+        subparser.add_argument("--base-branch", help="Override and persist the feature base branch for this sidecar project.")
 
     def add_task_update_args(subparser: argparse.ArgumentParser) -> None:
         subparser.add_argument("--task-id")
@@ -1193,6 +1657,13 @@ def build_parser() -> argparse.ArgumentParser:
         subparser.add_argument("--thread-summary")
         subparser.add_argument("--pr-url")
         subparser.add_argument("--touched-area", dest="touched_areas", action="append")
+        subparser.add_argument("--fact", dest="facts", action="append")
+        subparser.add_argument("--inference", dest="inferences", action="append")
+        subparser.add_argument("--unknown", dest="unknowns", action="append")
+        subparser.add_argument("--safety-rule", dest="safety_rules", action="append")
+        subparser.add_argument("--validation-command", dest="validation_commands", action="append")
+        subparser.add_argument("--validation-result", dest="validation_results", action="append")
+        subparser.add_argument("--validation-at")
 
     init_parser = subparsers.add_parser("init", help="Initialize the sidecar layout for the current worktree")
     add_common(init_parser)
@@ -1226,6 +1697,10 @@ def build_parser() -> argparse.ArgumentParser:
     resume_parser.add_argument("--first-step-correct", action="store_true")
     resume_parser.add_argument("--notes", default="")
     resume_parser.set_defaults(func=cmd_resume_feature)
+
+    audit_parser = subparsers.add_parser("audit-context", help="Audit current sidecar context for staleness and missing trust fields")
+    add_common(audit_parser)
+    audit_parser.set_defaults(func=cmd_audit_context)
 
     handoff_parser = subparsers.add_parser("handoff", help="Update the current task and write the latest handoff")
     add_common(handoff_parser)
