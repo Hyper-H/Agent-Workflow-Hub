@@ -40,6 +40,9 @@ For multi-worktree projects, keep one stable project identity. The CLI resolves 
 - `finish-feature`: Finish and archive the active task. Create a PR only if the user explicitly asks and GitHub CLI is already installed and authenticated.
 - `project-status`: Return compact project state for a project hub thread or planning discussion.
 - `weekly-report`: Generate a human-facing Markdown report under the sidecar `reports/` directory and reply with a short notification, not the full report by default.
+- `draft-issue`: Generate a dogfood/debug issue draft with Facts, Inferences, Unknowns, Reproduction, Suggested Fix, and Priority. This never requires GitHub CLI.
+- `create-issue`: Create a dogfood/debug GitHub issue only when the user explicitly asks or dogfood issue mode is enabled, GitHub CLI is authenticated, content is safe, and no likely duplicate is found.
+- `enable-dogfood-issue-mode` / `disable-dogfood-issue-mode`: Persist local sidecar permission for dogfood issue creation. This writes only to sidecar config.
 - `setup`: Safely create the local sidecar layout for this project.
 - `doctor`: Report readiness without installing tools or changing global Codex/GitHub configuration.
 
@@ -51,6 +54,8 @@ For multi-worktree projects, keep one stable project identity. The CLI resolves 
 - If the user asks to audit trustworthiness, run `audit-context` and summarize findings plus backfill prompts.
 - If the user is ending a session or passing work to another agent, run `handoff` with concrete done/not-done fields and explicit `--fact`, `--inference`, `--unknown`, `--safety-rule`, `--validation-command`, `--validation-result`, and `--validation-at` values where known.
 - If the user says the task is done, run `finish-feature`. Add `--create-pr` only when the user explicitly requests PR creation.
+- If the user reports dogfood/debug feedback, prefer `draft-issue` by default and return the copyable title/body.
+- If the user explicitly says "create issue", "提 issue", or asks to enable dogfood issue mode, use `enable-dogfood-issue-mode` or `create-issue` as appropriate. Never create an issue from inferred intent alone.
 - If the user asks from a project hub thread, use `project-status` for compact status and `weekly-report` for a human update.
 - If setup is uncertain, run `doctor` first. Explain any missing optional tools without installing them.
 
@@ -74,6 +79,12 @@ Handoffs must distinguish:
 - Safety rules: constraints for future agents, such as not deleting worktrees and not writing dynamic state into the target repo.
 
 The sidecar records `headSha`, `upstream`, `dirtyFiles`, and `dirtyFingerprint`. Treat `resume-feature` stale output as a warning to re-check current files before trusting an older handoff.
+
+## Dogfood Issue Guidance
+
+Dogfood issue reporting is draft-only by default. Issue drafts and created issues must keep Facts, Inferences, Unknowns, Reproduction, Suggested Fix, and Priority separate.
+
+Before creating a GitHub issue, the CLI checks GitHub CLI authentication, searches for similar open issues, and blocks creation when content appears to include secrets, private paths, long logs, or other sensitive material. Created issues always receive `agent-reported` and `needs-triage` labels. If GitHub CLI is unavailable, unauthenticated, unsafe, or likely duplicate, return the generated draft instead.
 
 ## Output Style
 

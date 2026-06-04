@@ -19,6 +19,15 @@ from typing import Any
 VALID_STATUSES = {"active", "paused", "blocked", "review"}
 SIDECAR_VERSION = 2
 GH_AUTH_STATUS_TIMEOUT_SECONDS = 15
+DOGFOOD_ISSUE_LABELS = ["agent-reported", "needs-triage"]
+SENSITIVE_ISSUE_PATTERNS = [
+    r"gho_[A-Za-z0-9_]+",
+    r"ghp_[A-Za-z0-9_]+",
+    r"sk-[A-Za-z0-9_-]{16,}",
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----",
+    r"(?i)\b(api[_-]?key|secret|token|password)\s*[:=]\s*\S+",
+    r"(?i)\b(users\\[^\\\s]+\\|/users/[^/\s]+/|/home/[^/\s]+/)",
+]
 
 
 def now_iso() -> str:
@@ -912,6 +921,157 @@ def build_pr_text(task: dict[str, Any], manager: SidecarManager, args: argparse.
     return title, body
 
 
+def issue_list(values: list[str] | None, empty: str = "Not recorded.") -> list[str]:
+    items = [short_text(item, max_len=500) for item in (values or []) if item and item.strip()]
+    return [f"- {item}" for item in items] or [f"- {empty}"]
+
+
+def build_issue_text(manager: SidecarManager, args: argparse.Namespace) -> tuple[str, str]:
+    title = short_text(args.issue_title or "Dogfood feedback from context-handoff", max_len=120)
+    priority = short_text(args.priority or "triage-needed", max_len=80)
+    lines = [
+        "## Facts",
+        *issue_list(args.facts),
+        "",
+        "## Inferences",
+        *issue_list(args.inferences),
+        "",
+        "## Unknowns",
+        *issue_list(args.unknowns),
+        "",
+        "## Reproduction",
+        *issue_list(args.reproduction),
+        "",
+        "## Suggested Fix",
+        *issue_list(args.suggested_fix),
+        "",
+        "## Priority",
+        f"- {priority}",
+        "",
+        "## Context",
+        f"- Project: {manager.project_id}",
+        f"- Branch: {manager.git.branch}",
+        f"- Worktree Name: {manager.git.worktree_path.name}",
+        f"- Generated At: {now_iso()}",
+    ]
+    return title, "\n".join(lines) + "\n"
+
+
+def sensitive_issue_findings(title: str, body: str) -> list[str]:
+    haystack = f"{title}\n{body}"
+    findings: list[str] = []
+    for pattern in SENSITIVE_ISSUE_PATTERNS:
+        if re.search(pattern, haystack):
+            findings.append(pattern)
+    if len(body.splitlines()) > 160 or len(body) > 12000:
+        findings.append("long-log-or-large-body")
+    return findings
+
+
+def issue_search_query(title: str) -> str:
+    words = re.findall(r"[A-Za-z0-9_-]{4,}", title)
+    return " ".join(words[:8]) or title
+
+
+def find_similar_open_issues(manager: SidecarManager, title: str, gh_path: str) -> list[dict[str, Any]]:
+    query = issue_search_query(title)
+    command = [
+        gh_path,
+        "issue",
+        "list",
+        "--state",
+        "open",
+        "--search",
+        query,
+        "--json",
+        "number,title,url",
+        "--limit",
+        "5",
+    ]
+    env = os.environ.copy()
+    env["GH_PROMPT_DISABLED"] = "1"
+    try:
+        proc = subprocess.run(
+            command,
+            cwd=str(manager.git.repo_root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            stdin=subprocess.DEVNULL,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        return []
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return []
+    try:
+        data = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def try_create_issue(manager: SidecarManager, title: str, body: str, args: argparse.Namespace) -> dict[str, Any]:
+    sensitive_findings = sensitive_issue_findings(title, body)
+    status = gh_status()
+    result: dict[str, Any] = {
+        "requested": True,
+        "created": False,
+        "title": title,
+        "body": body,
+        "labels": DOGFOOD_ISSUE_LABELS,
+        "gh": status,
+        "sensitiveFindings": sensitive_findings,
+        "similarOpenIssues": [],
+        "guidance": "",
+    }
+    if sensitive_findings:
+        result["guidance"] = "Sensitive or oversized content was detected; issue creation was blocked and a draft was returned."
+        return result
+    if not status["available"] or not status["authenticated"]:
+        result["guidance"] = "GitHub CLI is unavailable or unauthenticated; use the returned title/body as a draft."
+        return result
+
+    gh_path = status["path"]
+    similar_issues = find_similar_open_issues(manager, title, gh_path)
+    result["similarOpenIssues"] = similar_issues
+    if similar_issues and not args.allow_duplicate:
+        result["guidance"] = "Similar open issues were found; creation was blocked to avoid duplicates."
+        return result
+
+    command = [gh_path, "issue", "create", "--title", title, "--body", body]
+    for label in DOGFOOD_ISSUE_LABELS:
+        command.extend(["--label", label])
+    env = os.environ.copy()
+    env["GH_PROMPT_DISABLED"] = "1"
+    try:
+        proc = subprocess.run(
+            command,
+            cwd=str(manager.git.repo_root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            stdin=subprocess.DEVNULL,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired as exc:
+        result["guidance"] = "GitHub CLI timed out while creating the issue; use the returned title/body as a draft."
+        result["ghError"] = subprocess_timeout_output(exc)
+        return result
+    if proc.returncode == 0:
+        result["created"] = True
+        result["issueUrl"] = proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else ""
+        result["guidance"] = "Issue created with GitHub CLI."
+        return result
+    result["guidance"] = "GitHub CLI failed while creating the issue; use the returned title/body as a draft."
+    result["ghError"] = "\n".join(part for part in [proc.stdout.strip(), proc.stderr.strip()] if part)
+    return result
+
+
 def build_start_thread_summary(
     manager: SidecarManager,
     task: dict[str, Any],
@@ -1637,6 +1797,99 @@ def cmd_weekly_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def issue_output(manager: SidecarManager, args: argparse.Namespace, *, create: bool) -> dict[str, Any]:
+    title, body = build_issue_text(manager, args)
+    sensitive_findings = sensitive_issue_findings(title, body)
+    config = manager.sidecar_config()
+    dogfood_enabled = bool(config.get("dogfoodIssueMode"))
+    output: dict[str, Any] = {
+        "projectId": manager.project_id,
+        "dogfoodIssueMode": dogfood_enabled,
+        "created": False,
+        "draftOnly": True,
+        "title": title,
+        "body": body,
+        "labels": DOGFOOD_ISSUE_LABELS,
+        "sensitiveFindings": sensitive_findings,
+        "guidance": "Draft only by default. Ask to create issue or enable dogfood issue mode to allow creation.",
+    }
+    if not create:
+        return output
+    result = try_create_issue(manager, title, body, args)
+    output.update(result)
+    output["draftOnly"] = not result.get("created", False)
+    return output
+
+
+def cmd_draft_issue(args: argparse.Namespace) -> int:
+    started_at = time.perf_counter()
+    manager = make_manager(args)
+    output = issue_output(manager, args, create=False)
+    manager.log_event(
+        "draft-issue",
+        started_at=started_at,
+        sidecar_hit=True,
+        handoff_available=None,
+        scan_scope="dogfood-issue",
+        created=False,
+    )
+    print(json.dumps(output, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_create_issue(args: argparse.Namespace) -> int:
+    started_at = time.perf_counter()
+    manager = make_manager(args)
+    output = issue_output(manager, args, create=True)
+    manager.log_event(
+        "create-issue",
+        started_at=started_at,
+        sidecar_hit=True,
+        handoff_available=None,
+        scan_scope="dogfood-issue",
+        created=output.get("created", False),
+        draftOnly=output.get("draftOnly", True),
+    )
+    print(json.dumps(output, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_enable_dogfood_issue_mode(args: argparse.Namespace) -> int:
+    manager = make_manager(args)
+    manager.save_sidecar_config(dogfoodIssueMode=True)
+    print(
+        json.dumps(
+            {
+                "projectId": manager.project_id,
+                "dogfoodIssueMode": True,
+                "configPath": str(manager.config_path),
+                "repoMutated": False,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0
+
+
+def cmd_disable_dogfood_issue_mode(args: argparse.Namespace) -> int:
+    manager = make_manager(args)
+    manager.save_sidecar_config(dogfoodIssueMode=False)
+    print(
+        json.dumps(
+            {
+                "projectId": manager.project_id,
+                "dogfoodIssueMode": False,
+                "configPath": str(manager.config_path),
+                "repoMutated": False,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     worktree = Path(args.worktree or os.getcwd())
     manager = make_manager(args)
@@ -1712,6 +1965,17 @@ def build_parser() -> argparse.ArgumentParser:
         subparser.add_argument("--validation-command", dest="validation_commands", action="append")
         subparser.add_argument("--validation-result", dest="validation_results", action="append")
         subparser.add_argument("--validation-at")
+
+    def add_issue_args(subparser: argparse.ArgumentParser) -> None:
+        subparser.add_argument("--title", "--issue-title", dest="issue_title", required=True)
+        subparser.add_argument("--fact", dest="facts", action="append")
+        subparser.add_argument("--inference", dest="inferences", action="append")
+        subparser.add_argument("--unknown", dest="unknowns", action="append")
+        subparser.add_argument("--reproduction", action="append")
+        subparser.add_argument("--suggested-fix", dest="suggested_fix", action="append")
+        subparser.add_argument("--priority", default="triage-needed")
+        subparser.add_argument("--allow-duplicate", action="store_true")
+        subparser.add_argument("--force", action="store_true", help="Deprecated no-op; create-issue already represents explicit user approval.")
 
     init_parser = subparsers.add_parser("init", help="Initialize the sidecar layout for the current worktree")
     add_common(init_parser)
@@ -1791,6 +2055,24 @@ def build_parser() -> argparse.ArgumentParser:
     weekly_report_parser.add_argument("--period", help="Report period label. Defaults to ISO week.")
     weekly_report_parser.set_defaults(func=cmd_weekly_report)
 
+    draft_issue_parser = subparsers.add_parser("draft-issue", help="Generate a dogfood issue draft without requiring gh")
+    add_common(draft_issue_parser)
+    add_issue_args(draft_issue_parser)
+    draft_issue_parser.set_defaults(func=cmd_draft_issue)
+
+    create_issue_parser = subparsers.add_parser("create-issue", help="Create a dogfood issue when explicitly allowed and safe")
+    add_common(create_issue_parser)
+    add_issue_args(create_issue_parser)
+    create_issue_parser.set_defaults(func=cmd_create_issue)
+
+    enable_issue_parser = subparsers.add_parser("enable-dogfood-issue-mode", help="Allow dogfood issue creation for this local sidecar project")
+    add_common(enable_issue_parser)
+    enable_issue_parser.set_defaults(func=cmd_enable_dogfood_issue_mode)
+
+    disable_issue_parser = subparsers.add_parser("disable-dogfood-issue-mode", help="Return dogfood issue handling to draft-only mode")
+    add_common(disable_issue_parser)
+    disable_issue_parser.set_defaults(func=cmd_disable_dogfood_issue_mode)
+
     doctor_parser = subparsers.add_parser("doctor", help="Report environment readiness without changing global state")
     add_common(doctor_parser)
     doctor_parser.set_defaults(func=cmd_doctor)
@@ -1799,6 +2081,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     parser = build_parser()
     args = parser.parse_args()
     return args.func(args)
