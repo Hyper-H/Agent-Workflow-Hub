@@ -918,10 +918,12 @@ def build_start_thread_summary(
     handoff_available: bool,
     stale: dict[str, Any],
 ) -> str:
-    def add_limited_items(lines: list[str], title: str, items: list[Any], *, limit: int, empty: str = "not recorded") -> None:
-        lines.append(f"{title}:")
+    def add_limited_items(lines: list[str], title: str, items: list[Any], *, limit: int) -> None:
         values = [str(item).strip() for item in items if str(item).strip()]
-        lines.extend([f"- {short_text(item, max_len=140)}" for item in values[:limit]] or [f"- {empty}"])
+        if not values:
+            return
+        lines.append(f"{title}:")
+        lines.extend([f"- {short_text(item, max_len=140)}" for item in values[:limit]])
 
     validation = task.get("validation") or {}
     validation_commands = validation.get("commands") or []
@@ -939,34 +941,35 @@ def build_start_thread_summary(
         f"Project: {manager.project_id}",
         f"Task: {task.get('taskId') or 'not recorded'}",
         f"Branch: {task.get('branch') or manager.git.branch}",
-        f"Worktree: {task.get('worktreePath') or str(manager.git.worktree_path)}",
         f"Status: {task.get('status') or 'active'}",
         f"Handoff: {'available' if handoff_available else 'missing'}",
         f"Stale: {'yes' if stale.get('isStale') else 'no'}",
     ]
     if stale.get("isStale"):
         lines.append("STALE WARNING: verify before trusting this handoff.")
-    add_limited_items(lines, "Stale Reasons", stale_reasons, limit=2, empty="none")
+        add_limited_items(lines, "Stale Reasons", stale_reasons, limit=2)
     add_limited_items(lines, "Safety Rules", task.get("safetyRules") or [], limit=3)
     add_limited_items(lines, "Current Objective", [task.get("goal") or ""], limit=1)
     add_limited_items(lines, "Facts", task.get("facts") or [], limit=3)
     add_limited_items(lines, "Inferences", task.get("inferences") or [], limit=2)
     add_limited_items(lines, "Unknowns", task.get("unknowns") or [], limit=2)
-    lines.extend(
-        [
-            "Validation:",
-            f"- Last validation at: {validation.get('validatedAt') or 'not recorded'}",
-            f"- Command: {last_command.get('command') or 'not recorded'}",
-            f"- Result: {last_result.get('result') or 'not recorded'}",
-        ]
-    )
+    lines.append("Validation:")
+    if validation.get("validatedAt") or last_command or last_result or validation.get("notes"):
+        lines.extend(
+            [
+                f"- Last validation at: {validation.get('validatedAt') or 'not recorded'}",
+                f"- Command: {last_command.get('command') or 'not recorded'}",
+                f"- Result: {last_result.get('result') or 'not recorded'}",
+            ]
+        )
+    else:
+        lines.append("- not recorded")
     add_limited_items(lines, "Immediate Next Step", [task.get("nextStep") or ""], limit=1)
-    add_limited_items(lines, "Risks / Blockers", risks, limit=2, empty="none")
-    add_limited_items(lines, "Touched Areas", task.get("touchedAreas") or manager.default_touched_areas(), limit=3, empty="none")
+    add_limited_items(lines, "Risks / Blockers", risks, limit=2)
+    add_limited_items(lines, "Touched Areas", task.get("touchedAreas") or manager.default_touched_areas(), limit=3)
     lines.extend(
         [
             "Sidecar:",
-            f"- Path: {manager.sidecar_root}",
             f"- Handoff path: {manager.handoff_path_for(task)}",
         ]
     )
