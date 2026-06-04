@@ -918,14 +918,59 @@ def build_start_thread_summary(
     handoff_available: bool,
     stale: dict[str, Any],
 ) -> str:
-    pieces = [
-        f"Task {task.get('taskId')} on {task.get('branch') or manager.git.branch}.",
-        f"Goal: {task.get('goal') or 'not recorded'}.",
-        f"Next step: {task.get('nextStep') or 'not recorded'}.",
-        f"Handoff: {'available' if handoff_available else 'missing'}.",
-        f"Stale: {'yes' if stale.get('isStale') else 'no'}.",
+    def add_limited_items(lines: list[str], title: str, items: list[Any], *, limit: int, empty: str = "not recorded") -> None:
+        lines.append(f"{title}:")
+        values = [str(item).strip() for item in items if str(item).strip()]
+        lines.extend([f"- {short_text(item, max_len=140)}" for item in values[:limit]] or [f"- {empty}"])
+
+    validation = task.get("validation") or {}
+    validation_commands = validation.get("commands") or []
+    validation_results = validation.get("results") or []
+    last_command = validation_commands[-1] if validation_commands else {}
+    last_result = validation_results[-1] if validation_results else {}
+    stale_reasons = stale.get("reasons") or []
+    risks = task.get("risks") or []
+    blocker = task.get("blocker") or ""
+    if blocker:
+        risks = [blocker, *risks]
+
+    lines = [
+        "Context Handoff Start Summary",
+        f"Project: {manager.project_id}",
+        f"Task: {task.get('taskId') or 'not recorded'}",
+        f"Branch: {task.get('branch') or manager.git.branch}",
+        f"Worktree: {task.get('worktreePath') or str(manager.git.worktree_path)}",
+        f"Status: {task.get('status') or 'active'}",
+        f"Handoff: {'available' if handoff_available else 'missing'}",
+        f"Stale: {'yes' if stale.get('isStale') else 'no'}",
     ]
-    return " ".join(pieces)
+    if stale.get("isStale"):
+        lines.append("STALE WARNING: verify before trusting this handoff.")
+    add_limited_items(lines, "Stale Reasons", stale_reasons, limit=2, empty="none")
+    add_limited_items(lines, "Safety Rules", task.get("safetyRules") or [], limit=3)
+    add_limited_items(lines, "Current Objective", [task.get("goal") or ""], limit=1)
+    add_limited_items(lines, "Facts", task.get("facts") or [], limit=3)
+    add_limited_items(lines, "Inferences", task.get("inferences") or [], limit=2)
+    add_limited_items(lines, "Unknowns", task.get("unknowns") or [], limit=2)
+    lines.extend(
+        [
+            "Validation:",
+            f"- Last validation at: {validation.get('validatedAt') or 'not recorded'}",
+            f"- Command: {last_command.get('command') or 'not recorded'}",
+            f"- Result: {last_result.get('result') or 'not recorded'}",
+        ]
+    )
+    add_limited_items(lines, "Immediate Next Step", [task.get("nextStep") or ""], limit=1)
+    add_limited_items(lines, "Risks / Blockers", risks, limit=2, empty="none")
+    add_limited_items(lines, "Touched Areas", task.get("touchedAreas") or manager.default_touched_areas(), limit=3, empty="none")
+    lines.extend(
+        [
+            "Sidecar:",
+            f"- Path: {manager.sidecar_root}",
+            f"- Handoff path: {manager.handoff_path_for(task)}",
+        ]
+    )
+    return "\n".join(lines[:40])
 
 
 def pr_base_for_create(task: dict[str, Any], manager: SidecarManager, explicit_base: str | None) -> str:
