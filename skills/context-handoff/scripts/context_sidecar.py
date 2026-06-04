@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -19,6 +20,27 @@ from typing import Any
 VALID_STATUSES = {"active", "paused", "blocked", "review"}
 SIDECAR_VERSION = 2
 GH_AUTH_STATUS_TIMEOUT_SECONDS = 15
+DOGFOOD_ISSUE_LABELS = ["agent-reported", "needs-triage"]
+SENSITIVE_ISSUE_PATTERNS = [
+    r"gho_[A-Za-z0-9_]+",
+    r"ghp_[A-Za-z0-9_]+",
+    r"ghs_[A-Za-z0-9_]+",
+    r"ghu_[A-Za-z0-9_]+",
+    r"ghr_[A-Za-z0-9_]+",
+    r"github_pat_[A-Za-z0-9_]+",
+    r"sk-[A-Za-z0-9_-]{16,}",
+    r"AKIA[0-9A-Z]{16}",
+    r"(?i)bearer\s+[A-Za-z0-9._~+/=-]{16,}",
+    r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}",
+    r"npm_[A-Za-z0-9]{16,}",
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----",
+    r"(?i)\b(api[_-]?key|secret|token|password)\s*[:=]\s*\S+",
+    r"(?i)\b(users\\[^\\\s]+\\|/users/[^/\s]+/|/home/[^/\s]+/)",
+]
+JSON_READ_RETRIES = 5
+JSON_READ_RETRY_SECONDS = 0.05
+FILE_LOCK_TIMEOUT_SECONDS = 10
+FILE_LOCK_POLL_SECONDS = 0.05
 
 
 def now_iso() -> str:
@@ -123,8 +145,27 @@ def unique_nonempty(values: list[str], limit: int | None = None) -> list[str]:
     return result
 
 
+def normalized_dedupe_key(value: str) -> str:
+    return " ".join(value.casefold().split())
+
+
+def unique_normalized_nonempty(values: list[str], limit: int | None = None) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        original = value.strip()
+        key = normalized_dedupe_key(original)
+        if not original or not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(original)
+        if limit is not None and len(result) >= limit:
+            break
+    return result
+
+
 def normalized_note_list(values: list[str] | None, limit: int | None = None, max_len: int = 240) -> list[str]:
-    return unique_nonempty([short_text(item, max_len=max_len) for item in (values or [])], limit=limit)
+    return unique_normalized_nonempty([short_text(item, max_len=max_len) for item in (values or [])], limit=limit)
 
 
 def build_validation_record(args: argparse.Namespace, existing: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -288,21 +329,75 @@ def fingerprint_dirty_files(status_lines: list[str]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def lock_path_for(path: Path) -> Path:
+    return path.with_name(f".{path.name}.lock")
+
+
+@contextlib.contextmanager
+def file_lock(path: Path):
+    lock_path = lock_path_for(path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + FILE_LOCK_TIMEOUT_SECONDS
+    fd: int | None = None
+    while fd is None:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
+        except FileExistsError:
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"timed out acquiring sidecar lock: {lock_path}")
+            time.sleep(FILE_LOCK_POLL_SECONDS)
+    try:
+        os.write(fd, f"{os.getpid()} {now_iso()}\n".encode("utf-8"))
+        yield
+    finally:
+        os.close(fd)
+        try:
+            lock_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def atomic_write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+    with temp_path.open("w", encoding="utf-8", newline="") as fh:
+        fh.write(content)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(temp_path, path)
+
+
 def read_json(path: Path, default: Any) -> Any:
-    if not path.exists():
-        return default
-    return json.loads(path.read_text(encoding="utf-8"))
+    last_error: Exception | None = None
+    for attempt in range(JSON_READ_RETRIES):
+        if not path.exists():
+            return default
+        try:
+            raw = path.read_text(encoding="utf-8-sig")
+            if not raw.strip():
+                raise json.JSONDecodeError("empty JSON file", raw, 0)
+            return json.loads(raw)
+        except (OSError, json.JSONDecodeError) as exc:
+            last_error = exc
+            if attempt < JSON_READ_RETRIES - 1:
+                time.sleep(JSON_READ_RETRY_SECONDS * (attempt + 1))
+                continue
+            return default
+    return default
 
 
 def write_json(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    with file_lock(path):
+        atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
 
 
 def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    with file_lock(path):
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
 
 
 @dataclass
@@ -386,6 +481,8 @@ class SidecarManager:
             if current_remote and payload.get("remoteUrl") == current_remote:
                 return project_id
             if current_common_dir and payload.get("gitCommonDir") == current_common_dir:
+                return project_id
+            if payload.get("canonicalRepoRoot") == current_repo_root:
                 return project_id
             if payload.get("repoRoot") == current_repo_root:
                 return project_id
@@ -514,9 +611,12 @@ class SidecarManager:
                     "projectId": self.project_id,
                     "projectIdSource": self.project_id_source,
                     "baseBranch": self.base_branch_override or self.git.base_branch,
+                    "canonicalRepoRoot": str(self.git.repo_root),
                     "repoRoot": str(self.git.repo_root),
                     "gitCommonDir": str(self.git.common_dir) if self.git.common_dir else "",
                     "remoteUrl": self.git.remote_url,
+                    "lastWorktreePath": str(self.git.worktree_path),
+                    "currentWorktreePath": str(self.git.worktree_path),
                     "updatedAt": now_iso(),
                 },
             )
@@ -529,14 +629,21 @@ class SidecarManager:
     def sidecar_config(self) -> dict[str, Any]:
         self.ensure_layout()
         config = read_json(self.config_path, {})
+        before = json.dumps(config, ensure_ascii=False, sort_keys=True)
         config.setdefault("version", SIDECAR_VERSION)
         config.setdefault("projectId", self.project_id)
+        config.setdefault("canonicalRepoRoot", config.get("repoRoot") or str(self.git.repo_root))
+        config.setdefault("repoRoot", config["canonicalRepoRoot"])
+        config["lastWorktreePath"] = str(self.git.worktree_path)
+        config["currentWorktreePath"] = str(self.git.worktree_path)
         if self.base_branch_override:
             config["baseBranch"] = self.base_branch_override
-            write_json(self.config_path, {**config, "updatedAt": now_iso()})
             self.git.base_branch = self.base_branch_override
         elif config.get("baseBranch"):
             self.git.base_branch = config["baseBranch"]
+        after = json.dumps(config, ensure_ascii=False, sort_keys=True)
+        if after != before:
+            write_json(self.config_path, {**config, "updatedAt": now_iso()})
         return config
 
     def save_sidecar_config(self, **updates: Any) -> None:
@@ -544,9 +651,12 @@ class SidecarManager:
         config.update({key: value for key, value in updates.items() if value is not None})
         config["version"] = SIDECAR_VERSION
         config["projectId"] = self.project_id
-        config["repoRoot"] = str(self.git.repo_root)
+        config.setdefault("canonicalRepoRoot", config.get("repoRoot") or str(self.git.repo_root))
+        config.setdefault("repoRoot", config["canonicalRepoRoot"])
         config["gitCommonDir"] = str(self.git.common_dir) if self.git.common_dir else ""
         config["remoteUrl"] = self.git.remote_url
+        config["lastWorktreePath"] = str(self.git.worktree_path)
+        config["currentWorktreePath"] = str(self.git.worktree_path)
         config["updatedAt"] = now_iso()
         write_json(self.config_path, config)
 
@@ -577,6 +687,8 @@ class SidecarManager:
             task.setdefault("inferences", [])
             task.setdefault("unknowns", [])
             task.setdefault("safetyRules", [])
+            for field in ["facts", "inferences", "unknowns", "safetyRules"]:
+                task[field] = unique_normalized_nonempty([str(item) for item in task.get(field, [])], limit=30)
         if not self.project_state_path.exists():
             self.write_project_state(payload.get("tasks", []))
         return payload
@@ -752,7 +864,7 @@ class SidecarManager:
         ]:
             values = normalized_note_list(getattr(args, arg_name, None), limit=20, max_len=320)
             if values:
-                task[field] = unique_nonempty([*task.get(field, []), *values], limit=30)
+                task[field] = unique_normalized_nonempty([*task.get(field, []), *values], limit=30)
             else:
                 task.setdefault(field, [])
 
@@ -912,20 +1024,240 @@ def build_pr_text(task: dict[str, Any], manager: SidecarManager, args: argparse.
     return title, body
 
 
+def issue_list(values: list[str] | None, empty: str = "Not recorded.") -> list[str]:
+    items = [short_text(item, max_len=500) for item in (values or []) if item and item.strip()]
+    return [f"- {item}" for item in items] or [f"- {empty}"]
+
+
+def build_issue_text(manager: SidecarManager, args: argparse.Namespace) -> tuple[str, str]:
+    title = short_text(args.issue_title or "Dogfood feedback from context-handoff", max_len=120)
+    priority = short_text(args.priority or "triage-needed", max_len=80)
+    lines = [
+        "## Facts",
+        *issue_list(args.facts),
+        "",
+        "## Inferences",
+        *issue_list(args.inferences),
+        "",
+        "## Unknowns",
+        *issue_list(args.unknowns),
+        "",
+        "## Reproduction",
+        *issue_list(args.reproduction),
+        "",
+        "## Suggested Fix",
+        *issue_list(args.suggested_fix),
+        "",
+        "## Priority",
+        f"- {priority}",
+        "",
+        "## Context",
+        f"- Project: {manager.project_id}",
+        f"- Branch: {manager.git.branch}",
+        f"- Worktree Name: {manager.git.worktree_path.name}",
+        f"- Generated At: {now_iso()}",
+    ]
+    return title, "\n".join(lines) + "\n"
+
+
+def sensitive_issue_findings(title: str, body: str) -> list[str]:
+    haystack = f"{title}\n{body}"
+    findings: list[str] = []
+    for pattern in SENSITIVE_ISSUE_PATTERNS:
+        if re.search(pattern, haystack):
+            findings.append(pattern)
+    if len(body.splitlines()) > 160 or len(body) > 12000:
+        findings.append("long-log-or-large-body")
+    return findings
+
+
+def issue_search_query(title: str) -> str:
+    words = re.findall(r"[A-Za-z0-9_-]{4,}", title)
+    return " ".join(words[:8]) or title
+
+
+def find_similar_open_issues(manager: SidecarManager, title: str, gh_path: str) -> dict[str, Any]:
+    query = issue_search_query(title)
+    result: dict[str, Any] = {"ok": False, "query": query, "issues": [], "message": ""}
+    command = [
+        gh_path,
+        "issue",
+        "list",
+        "--state",
+        "open",
+        "--search",
+        query,
+        "--json",
+        "number,title,url",
+        "--limit",
+        "5",
+    ]
+    env = os.environ.copy()
+    env["GH_PROMPT_DISABLED"] = "1"
+    try:
+        proc = subprocess.run(
+            command,
+            cwd=str(manager.git.repo_root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            stdin=subprocess.DEVNULL,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        result["message"] = "similar issue search timed out"
+        return result
+    if proc.returncode != 0 or not proc.stdout.strip():
+        result["message"] = "\n".join(part for part in [proc.stdout.strip(), proc.stderr.strip()] if part) or "similar issue search failed"
+        return result
+    try:
+        data = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        result["message"] = f"similar issue search returned invalid JSON: {exc}"
+        return result
+    if not isinstance(data, list):
+        result["message"] = "similar issue search returned unexpected JSON"
+        return result
+    result["ok"] = True
+    result["issues"] = data
+    result["message"] = "similar issue search completed"
+    return result
+
+
+def try_create_issue(manager: SidecarManager, title: str, body: str, args: argparse.Namespace) -> dict[str, Any]:
+    sensitive_findings = sensitive_issue_findings(title, body)
+    status = gh_status()
+    result: dict[str, Any] = {
+        "requested": True,
+        "created": False,
+        "title": title,
+        "body": body,
+        "labels": DOGFOOD_ISSUE_LABELS,
+        "gh": status,
+        "sensitiveFindings": sensitive_findings,
+        "similarOpenIssues": [],
+        "similarIssueSearch": {"ok": None, "query": "", "message": "not checked"},
+        "guidance": "",
+    }
+    if sensitive_findings:
+        result["guidance"] = "Sensitive or oversized content was detected; issue creation was blocked and a draft was returned."
+        return result
+    if not status["available"] or not status["authenticated"]:
+        result["guidance"] = "GitHub CLI is unavailable or unauthenticated; use the returned title/body as a draft."
+        return result
+
+    gh_path = status["path"]
+    search_result = find_similar_open_issues(manager, title, gh_path)
+    result["similarIssueSearch"] = {
+        "ok": search_result.get("ok", False),
+        "query": search_result.get("query", ""),
+        "message": search_result.get("message", ""),
+    }
+    if not search_result.get("ok", False):
+        result["guidance"] = "Similar issue search failed; creation was blocked and a draft was returned."
+        return result
+    similar_issues = search_result.get("issues", [])
+    result["similarOpenIssues"] = similar_issues
+    if similar_issues and not args.allow_duplicate:
+        result["guidance"] = "Similar open issues were found; creation was blocked to avoid duplicates."
+        return result
+
+    command = [gh_path, "issue", "create", "--title", title, "--body", body]
+    for label in DOGFOOD_ISSUE_LABELS:
+        command.extend(["--label", label])
+    env = os.environ.copy()
+    env["GH_PROMPT_DISABLED"] = "1"
+    try:
+        proc = subprocess.run(
+            command,
+            cwd=str(manager.git.repo_root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            stdin=subprocess.DEVNULL,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired as exc:
+        result["guidance"] = "GitHub CLI timed out while creating the issue; use the returned title/body as a draft."
+        result["ghError"] = subprocess_timeout_output(exc)
+        return result
+    if proc.returncode == 0:
+        result["created"] = True
+        result["issueUrl"] = proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else ""
+        result["guidance"] = "Issue created with GitHub CLI."
+        return result
+    result["guidance"] = "GitHub CLI failed while creating the issue; use the returned title/body as a draft."
+    result["ghError"] = "\n".join(part for part in [proc.stdout.strip(), proc.stderr.strip()] if part)
+    return result
+
+
 def build_start_thread_summary(
     manager: SidecarManager,
     task: dict[str, Any],
     handoff_available: bool,
     stale: dict[str, Any],
 ) -> str:
-    pieces = [
-        f"Task {task.get('taskId')} on {task.get('branch') or manager.git.branch}.",
-        f"Goal: {task.get('goal') or 'not recorded'}.",
-        f"Next step: {task.get('nextStep') or 'not recorded'}.",
-        f"Handoff: {'available' if handoff_available else 'missing'}.",
-        f"Stale: {'yes' if stale.get('isStale') else 'no'}.",
+    def add_limited_items(lines: list[str], title: str, items: list[Any], *, limit: int, empty: str = "not recorded") -> None:
+        values = [str(item).strip() for item in items if str(item).strip()]
+        lines.append(f"{title}:")
+        lines.extend([f"- {short_text(item, max_len=140)}" for item in values[:limit]] or [f"- {empty}"])
+
+    validation = task.get("validation") or {}
+    validation_commands = validation.get("commands") or []
+    validation_results = validation.get("results") or []
+    last_command = validation_commands[-1] if validation_commands else {}
+    last_result = validation_results[-1] if validation_results else {}
+    stale_reasons = stale.get("reasons") or []
+    risks = task.get("risks") or []
+    blocker = task.get("blocker") or ""
+    if blocker:
+        risks = [blocker, *risks]
+
+    lines = [
+        "Context Handoff Start Summary",
+        f"Project: {manager.project_id}",
+        f"Task: {task.get('taskId') or 'not recorded'}",
+        f"Branch: {task.get('branch') or manager.git.branch}",
+        f"Worktree: {task.get('worktreePath') or str(manager.git.worktree_path)}",
+        f"Status: {task.get('status') or 'active'}",
+        f"Handoff: {'available' if handoff_available else 'missing'}",
+        f"Stale: {'yes' if stale.get('isStale') else 'no'}",
     ]
-    return " ".join(pieces)
+    if stale.get("isStale"):
+        lines.append("Stale Warning: verify before trusting this handoff.")
+    else:
+        lines.append("Stale Warning: none")
+    add_limited_items(lines, "Stale Reasons", stale_reasons, limit=2, empty="none")
+    add_limited_items(lines, "Safety Rules", task.get("safetyRules") or [], limit=3)
+    add_limited_items(lines, "Current Objective", [task.get("goal") or ""], limit=1)
+    add_limited_items(lines, "Facts", task.get("facts") or [], limit=3)
+    add_limited_items(lines, "Inferences", task.get("inferences") or [], limit=2)
+    add_limited_items(lines, "Unknowns", task.get("unknowns") or [], limit=2)
+    lines.append("Validation:")
+    if validation.get("validatedAt") or last_command or last_result or validation.get("notes"):
+        lines.extend(
+            [
+                f"- Last validation at: {validation.get('validatedAt') or 'not recorded'}",
+                f"- Command: {last_command.get('command') or 'not recorded'}",
+                f"- Result: {last_result.get('result') or 'not recorded'}",
+            ]
+        )
+    else:
+        lines.append("- not recorded")
+    add_limited_items(lines, "Immediate Next Step", [task.get("nextStep") or ""], limit=1)
+    add_limited_items(lines, "Risks / Blockers", risks, limit=2, empty="none")
+    add_limited_items(lines, "Touched Areas", task.get("touchedAreas") or manager.default_touched_areas(), limit=3, empty="none")
+    lines.extend(
+        [
+            "Sidecar:",
+            f"- Handoff path: {manager.handoff_path_for(task)}",
+        ]
+    )
+    return "\n".join(lines[:40])
 
 
 def pr_base_for_create(task: dict[str, Any], manager: SidecarManager, explicit_base: str | None) -> str:
@@ -1091,7 +1423,8 @@ def archive_task(
         archive_payload["pr"] = pr_result
     write_json(archive_json_path, archive_payload)
     if handoff_path.exists():
-        archive_md_path.write_text(handoff_path.read_text(encoding="utf-8"), encoding="utf-8")
+        with file_lock(archive_md_path):
+            atomic_write_text(archive_md_path, handoff_path.read_text(encoding="utf-8"))
 
     removed_selected = False
     remaining_tasks = []
@@ -1460,7 +1793,8 @@ def cmd_handoff(args: argparse.Namespace) -> int:
 
     handoff_path = manager.handoff_path_for(task)
     handoff_content = build_handoff_markdown(task, args, manager)
-    handoff_path.write_text(handoff_content, encoding="utf-8")
+    with file_lock(handoff_path):
+        atomic_write_text(handoff_path, handoff_content)
     manager.save_active_tasks(payload)
 
     manager.log_event(
@@ -1564,7 +1898,8 @@ def cmd_weekly_report(args: argparse.Namespace) -> int:
     period = safe_filename_label(args.period or default_weekly_period(), "weekly-report")
     report_name = f"{period}-{manager.project_id}.md"
     report_path = manager.reports_dir / report_name
-    report_path.write_text(build_weekly_report(manager, state, period), encoding="utf-8")
+    with file_lock(report_path):
+        atomic_write_text(report_path, build_weekly_report(manager, state, period))
     notification = f"Weekly context report is ready: {report_path}"
     manager.log_event(
         "weekly-report",
@@ -1581,6 +1916,100 @@ def cmd_weekly_report(args: argparse.Namespace) -> int:
                 "reportPath": str(report_path),
                 "notification": notification,
                 "fullReportPastedByDefault": False,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0
+
+
+def issue_output(manager: SidecarManager, args: argparse.Namespace, *, create: bool) -> dict[str, Any]:
+    title, body = build_issue_text(manager, args)
+    sensitive_findings = sensitive_issue_findings(title, body)
+    config = manager.sidecar_config()
+    dogfood_enabled = bool(config.get("dogfoodIssueMode"))
+    output: dict[str, Any] = {
+        "projectId": manager.project_id,
+        "dogfoodIssueMode": dogfood_enabled,
+        "creationAuthorization": "explicit-create-action" if create else ("dogfoodIssueMode" if dogfood_enabled else "draft-only"),
+        "created": False,
+        "draftOnly": True,
+        "title": title,
+        "body": body,
+        "labels": DOGFOOD_ISSUE_LABELS,
+        "sensitiveFindings": sensitive_findings,
+        "guidance": "Draft only by default. Ask to create issue or enable dogfood issue mode to allow creation.",
+    }
+    if not create:
+        return output
+    result = try_create_issue(manager, title, body, args)
+    output.update(result)
+    output["draftOnly"] = not result.get("created", False)
+    return output
+
+
+def cmd_draft_issue(args: argparse.Namespace) -> int:
+    started_at = time.perf_counter()
+    manager = make_manager(args)
+    output = issue_output(manager, args, create=False)
+    manager.log_event(
+        "draft-issue",
+        started_at=started_at,
+        sidecar_hit=True,
+        handoff_available=None,
+        scan_scope="dogfood-issue",
+        created=False,
+    )
+    print(json.dumps(output, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_create_issue(args: argparse.Namespace) -> int:
+    started_at = time.perf_counter()
+    manager = make_manager(args)
+    output = issue_output(manager, args, create=True)
+    manager.log_event(
+        "create-issue",
+        started_at=started_at,
+        sidecar_hit=True,
+        handoff_available=None,
+        scan_scope="dogfood-issue",
+        created=output.get("created", False),
+        draftOnly=output.get("draftOnly", True),
+    )
+    print(json.dumps(output, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_enable_dogfood_issue_mode(args: argparse.Namespace) -> int:
+    manager = make_manager(args)
+    manager.save_sidecar_config(dogfoodIssueMode=True)
+    print(
+        json.dumps(
+            {
+                "projectId": manager.project_id,
+                "dogfoodIssueMode": True,
+                "configPath": str(manager.config_path),
+                "repoMutated": False,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0
+
+
+def cmd_disable_dogfood_issue_mode(args: argparse.Namespace) -> int:
+    manager = make_manager(args)
+    manager.save_sidecar_config(dogfoodIssueMode=False)
+    print(
+        json.dumps(
+            {
+                "projectId": manager.project_id,
+                "dogfoodIssueMode": False,
+                "configPath": str(manager.config_path),
+                "repoMutated": False,
             },
             ensure_ascii=False,
             indent=2,
@@ -1665,6 +2094,16 @@ def build_parser() -> argparse.ArgumentParser:
         subparser.add_argument("--validation-result", dest="validation_results", action="append")
         subparser.add_argument("--validation-at")
 
+    def add_issue_args(subparser: argparse.ArgumentParser) -> None:
+        subparser.add_argument("--title", "--issue-title", dest="issue_title", required=True)
+        subparser.add_argument("--fact", dest="facts", action="append")
+        subparser.add_argument("--inference", dest="inferences", action="append")
+        subparser.add_argument("--unknown", dest="unknowns", action="append")
+        subparser.add_argument("--reproduction", action="append")
+        subparser.add_argument("--suggested-fix", dest="suggested_fix", action="append")
+        subparser.add_argument("--priority", default="triage-needed")
+        subparser.add_argument("--allow-duplicate", action="store_true")
+
     init_parser = subparsers.add_parser("init", help="Initialize the sidecar layout for the current worktree")
     add_common(init_parser)
     init_parser.set_defaults(func=cmd_init)
@@ -1743,6 +2182,24 @@ def build_parser() -> argparse.ArgumentParser:
     weekly_report_parser.add_argument("--period", help="Report period label. Defaults to ISO week.")
     weekly_report_parser.set_defaults(func=cmd_weekly_report)
 
+    draft_issue_parser = subparsers.add_parser("draft-issue", help="Generate a dogfood issue draft without requiring gh")
+    add_common(draft_issue_parser)
+    add_issue_args(draft_issue_parser)
+    draft_issue_parser.set_defaults(func=cmd_draft_issue)
+
+    create_issue_parser = subparsers.add_parser("create-issue", help="Create a dogfood issue when explicitly allowed and safe")
+    add_common(create_issue_parser)
+    add_issue_args(create_issue_parser)
+    create_issue_parser.set_defaults(func=cmd_create_issue)
+
+    enable_issue_parser = subparsers.add_parser("enable-dogfood-issue-mode", help="Allow dogfood issue creation for this local sidecar project")
+    add_common(enable_issue_parser)
+    enable_issue_parser.set_defaults(func=cmd_enable_dogfood_issue_mode)
+
+    disable_issue_parser = subparsers.add_parser("disable-dogfood-issue-mode", help="Return dogfood issue handling to draft-only mode")
+    add_common(disable_issue_parser)
+    disable_issue_parser.set_defaults(func=cmd_disable_dogfood_issue_mode)
+
     doctor_parser = subparsers.add_parser("doctor", help="Report environment readiness without changing global state")
     add_common(doctor_parser)
     doctor_parser.set_defaults(func=cmd_doctor)
@@ -1751,6 +2208,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     parser = build_parser()
     args = parser.parse_args()
     return args.func(args)

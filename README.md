@@ -65,6 +65,10 @@ Use $context-handoff to audit this context before another agent takes over.
 ```
 
 ```text
+Use $context-handoff to draft a dogfood issue for this problem.
+```
+
+```text
 Use $context-handoff to finish this feature and generate PR text.
 ```
 
@@ -106,6 +110,9 @@ Base branch can be overridden with `--base-branch dev`; the value is persisted i
 - `finish-feature`: Archive the task and generate PR title/body; create a PR only when explicitly requested and GitHub CLI is ready.
 - `project-status`: Summarize current project state for a project hub thread.
 - `weekly-report`: Write a human-facing Markdown report under the sidecar `reports/` directory.
+- `draft-issue`: Generate a dogfood/debug issue draft without requiring GitHub CLI.
+- `create-issue`: Create a dogfood/debug issue only when explicitly requested, safe, authenticated, and not likely duplicated.
+- `enable-dogfood-issue-mode` / `disable-dogfood-issue-mode`: Persist local sidecar permission for dogfood issue creation.
 
 V1 `worktree-intake` and `worktree-handoff` have been merged into the unified `context-handoff` skill as `resume-feature` and `handoff`.
 
@@ -128,6 +135,19 @@ The sidecar also records `headSha`, `upstream`, `dirtyFiles`, and `dirtyFingerpr
 GitHub CLI is optional. `finish-feature` always works without a PR URL. If `gh` is installed and authenticated, the skill can create a PR when the user explicitly asks. Otherwise it generates PR title/body text and records local completion state.
 
 Any non-zero `gh auth status` result, traceback, `TypeError`, or exception-like output is treated as unauthenticated.
+
+## Dogfood Issue Mode
+
+Dogfood issue reporting is draft-only by default. Agents may generate a copyable issue draft with `draft-issue` without GitHub CLI. Issue bodies always separate:
+
+- Facts
+- Inferences
+- Unknowns
+- Reproduction
+- Suggested Fix
+- Priority
+
+Automatic issue creation is allowed only when the user explicitly asks to create an issue or enables dogfood issue mode for the local sidecar project. Created issues get `agent-reported` and `needs-triage` labels. Before creating, the CLI checks `gh auth status`, searches similar open issues, and blocks creation when sensitive content, tokens, private paths, or oversized logs are detected. In blocked or unauthenticated cases it returns the title/body draft instead.
 
 ## Research Notes
 
