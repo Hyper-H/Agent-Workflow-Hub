@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -28,6 +29,10 @@ SENSITIVE_ISSUE_PATTERNS = [
     r"(?i)\b(api[_-]?key|secret|token|password)\s*[:=]\s*\S+",
     r"(?i)\b(users\\[^\\\s]+\\|/users/[^/\s]+/|/home/[^/\s]+/)",
 ]
+JSON_READ_RETRIES = 5
+JSON_READ_RETRY_SECONDS = 0.05
+FILE_LOCK_TIMEOUT_SECONDS = 10
+FILE_LOCK_POLL_SECONDS = 0.05
 
 
 def now_iso() -> str:
@@ -132,8 +137,27 @@ def unique_nonempty(values: list[str], limit: int | None = None) -> list[str]:
     return result
 
 
+def normalized_dedupe_key(value: str) -> str:
+    return " ".join(value.casefold().split())
+
+
+def unique_normalized_nonempty(values: list[str], limit: int | None = None) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        original = value.strip()
+        key = normalized_dedupe_key(original)
+        if not original or not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(original)
+        if limit is not None and len(result) >= limit:
+            break
+    return result
+
+
 def normalized_note_list(values: list[str] | None, limit: int | None = None, max_len: int = 240) -> list[str]:
-    return unique_nonempty([short_text(item, max_len=max_len) for item in (values or [])], limit=limit)
+    return unique_normalized_nonempty([short_text(item, max_len=max_len) for item in (values or [])], limit=limit)
 
 
 def build_validation_record(args: argparse.Namespace, existing: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -297,21 +321,75 @@ def fingerprint_dirty_files(status_lines: list[str]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def lock_path_for(path: Path) -> Path:
+    return path.with_name(f".{path.name}.lock")
+
+
+@contextlib.contextmanager
+def file_lock(path: Path):
+    lock_path = lock_path_for(path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + FILE_LOCK_TIMEOUT_SECONDS
+    fd: int | None = None
+    while fd is None:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
+        except FileExistsError:
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"timed out acquiring sidecar lock: {lock_path}")
+            time.sleep(FILE_LOCK_POLL_SECONDS)
+    try:
+        os.write(fd, f"{os.getpid()} {now_iso()}\n".encode("utf-8"))
+        yield
+    finally:
+        os.close(fd)
+        try:
+            lock_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def atomic_write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+    with temp_path.open("w", encoding="utf-8", newline="") as fh:
+        fh.write(content)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(temp_path, path)
+
+
 def read_json(path: Path, default: Any) -> Any:
-    if not path.exists():
-        return default
-    return json.loads(path.read_text(encoding="utf-8"))
+    last_error: Exception | None = None
+    for attempt in range(JSON_READ_RETRIES):
+        if not path.exists():
+            return default
+        try:
+            raw = path.read_text(encoding="utf-8-sig")
+            if not raw.strip():
+                raise json.JSONDecodeError("empty JSON file", raw, 0)
+            return json.loads(raw)
+        except (OSError, json.JSONDecodeError) as exc:
+            last_error = exc
+            if attempt < JSON_READ_RETRIES - 1:
+                time.sleep(JSON_READ_RETRY_SECONDS * (attempt + 1))
+                continue
+            return default
+    return default
 
 
 def write_json(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    with file_lock(path):
+        atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
 
 
 def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    with file_lock(path):
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
 
 
 @dataclass
@@ -395,6 +473,8 @@ class SidecarManager:
             if current_remote and payload.get("remoteUrl") == current_remote:
                 return project_id
             if current_common_dir and payload.get("gitCommonDir") == current_common_dir:
+                return project_id
+            if payload.get("canonicalRepoRoot") == current_repo_root:
                 return project_id
             if payload.get("repoRoot") == current_repo_root:
                 return project_id
@@ -523,9 +603,12 @@ class SidecarManager:
                     "projectId": self.project_id,
                     "projectIdSource": self.project_id_source,
                     "baseBranch": self.base_branch_override or self.git.base_branch,
+                    "canonicalRepoRoot": str(self.git.repo_root),
                     "repoRoot": str(self.git.repo_root),
                     "gitCommonDir": str(self.git.common_dir) if self.git.common_dir else "",
                     "remoteUrl": self.git.remote_url,
+                    "lastWorktreePath": str(self.git.worktree_path),
+                    "currentWorktreePath": str(self.git.worktree_path),
                     "updatedAt": now_iso(),
                 },
             )
@@ -538,14 +621,21 @@ class SidecarManager:
     def sidecar_config(self) -> dict[str, Any]:
         self.ensure_layout()
         config = read_json(self.config_path, {})
+        before = json.dumps(config, ensure_ascii=False, sort_keys=True)
         config.setdefault("version", SIDECAR_VERSION)
         config.setdefault("projectId", self.project_id)
+        config.setdefault("canonicalRepoRoot", config.get("repoRoot") or str(self.git.repo_root))
+        config.setdefault("repoRoot", config["canonicalRepoRoot"])
+        config["lastWorktreePath"] = str(self.git.worktree_path)
+        config["currentWorktreePath"] = str(self.git.worktree_path)
         if self.base_branch_override:
             config["baseBranch"] = self.base_branch_override
-            write_json(self.config_path, {**config, "updatedAt": now_iso()})
             self.git.base_branch = self.base_branch_override
         elif config.get("baseBranch"):
             self.git.base_branch = config["baseBranch"]
+        after = json.dumps(config, ensure_ascii=False, sort_keys=True)
+        if after != before:
+            write_json(self.config_path, {**config, "updatedAt": now_iso()})
         return config
 
     def save_sidecar_config(self, **updates: Any) -> None:
@@ -553,9 +643,12 @@ class SidecarManager:
         config.update({key: value for key, value in updates.items() if value is not None})
         config["version"] = SIDECAR_VERSION
         config["projectId"] = self.project_id
-        config["repoRoot"] = str(self.git.repo_root)
+        config.setdefault("canonicalRepoRoot", config.get("repoRoot") or str(self.git.repo_root))
+        config.setdefault("repoRoot", config["canonicalRepoRoot"])
         config["gitCommonDir"] = str(self.git.common_dir) if self.git.common_dir else ""
         config["remoteUrl"] = self.git.remote_url
+        config["lastWorktreePath"] = str(self.git.worktree_path)
+        config["currentWorktreePath"] = str(self.git.worktree_path)
         config["updatedAt"] = now_iso()
         write_json(self.config_path, config)
 
@@ -586,6 +679,8 @@ class SidecarManager:
             task.setdefault("inferences", [])
             task.setdefault("unknowns", [])
             task.setdefault("safetyRules", [])
+            for field in ["facts", "inferences", "unknowns", "safetyRules"]:
+                task[field] = unique_normalized_nonempty([str(item) for item in task.get(field, [])], limit=30)
         if not self.project_state_path.exists():
             self.write_project_state(payload.get("tasks", []))
         return payload
@@ -761,7 +856,7 @@ class SidecarManager:
         ]:
             values = normalized_note_list(getattr(args, arg_name, None), limit=20, max_len=320)
             if values:
-                task[field] = unique_nonempty([*task.get(field, []), *values], limit=30)
+                task[field] = unique_normalized_nonempty([*task.get(field, []), *values], limit=30)
             else:
                 task.setdefault(field, [])
 
@@ -1078,12 +1173,10 @@ def build_start_thread_summary(
     handoff_available: bool,
     stale: dict[str, Any],
 ) -> str:
-    def add_limited_items(lines: list[str], title: str, items: list[Any], *, limit: int) -> None:
+    def add_limited_items(lines: list[str], title: str, items: list[Any], *, limit: int, empty: str = "not recorded") -> None:
         values = [str(item).strip() for item in items if str(item).strip()]
-        if not values:
-            return
         lines.append(f"{title}:")
-        lines.extend([f"- {short_text(item, max_len=140)}" for item in values[:limit]])
+        lines.extend([f"- {short_text(item, max_len=140)}" for item in values[:limit]] or [f"- {empty}"])
 
     validation = task.get("validation") or {}
     validation_commands = validation.get("commands") or []
@@ -1101,13 +1194,16 @@ def build_start_thread_summary(
         f"Project: {manager.project_id}",
         f"Task: {task.get('taskId') or 'not recorded'}",
         f"Branch: {task.get('branch') or manager.git.branch}",
+        f"Worktree: {task.get('worktreePath') or str(manager.git.worktree_path)}",
         f"Status: {task.get('status') or 'active'}",
         f"Handoff: {'available' if handoff_available else 'missing'}",
         f"Stale: {'yes' if stale.get('isStale') else 'no'}",
     ]
     if stale.get("isStale"):
-        lines.append("STALE WARNING: verify before trusting this handoff.")
-        add_limited_items(lines, "Stale Reasons", stale_reasons, limit=2)
+        lines.append("Stale Warning: verify before trusting this handoff.")
+    else:
+        lines.append("Stale Warning: none")
+    add_limited_items(lines, "Stale Reasons", stale_reasons, limit=2, empty="none")
     add_limited_items(lines, "Safety Rules", task.get("safetyRules") or [], limit=3)
     add_limited_items(lines, "Current Objective", [task.get("goal") or ""], limit=1)
     add_limited_items(lines, "Facts", task.get("facts") or [], limit=3)
@@ -1125,8 +1221,8 @@ def build_start_thread_summary(
     else:
         lines.append("- not recorded")
     add_limited_items(lines, "Immediate Next Step", [task.get("nextStep") or ""], limit=1)
-    add_limited_items(lines, "Risks / Blockers", risks, limit=2)
-    add_limited_items(lines, "Touched Areas", task.get("touchedAreas") or manager.default_touched_areas(), limit=3)
+    add_limited_items(lines, "Risks / Blockers", risks, limit=2, empty="none")
+    add_limited_items(lines, "Touched Areas", task.get("touchedAreas") or manager.default_touched_areas(), limit=3, empty="none")
     lines.extend(
         [
             "Sidecar:",
@@ -1299,7 +1395,8 @@ def archive_task(
         archive_payload["pr"] = pr_result
     write_json(archive_json_path, archive_payload)
     if handoff_path.exists():
-        archive_md_path.write_text(handoff_path.read_text(encoding="utf-8"), encoding="utf-8")
+        with file_lock(archive_md_path):
+            atomic_write_text(archive_md_path, handoff_path.read_text(encoding="utf-8"))
 
     removed_selected = False
     remaining_tasks = []
@@ -1668,7 +1765,8 @@ def cmd_handoff(args: argparse.Namespace) -> int:
 
     handoff_path = manager.handoff_path_for(task)
     handoff_content = build_handoff_markdown(task, args, manager)
-    handoff_path.write_text(handoff_content, encoding="utf-8")
+    with file_lock(handoff_path):
+        atomic_write_text(handoff_path, handoff_content)
     manager.save_active_tasks(payload)
 
     manager.log_event(
@@ -1772,7 +1870,8 @@ def cmd_weekly_report(args: argparse.Namespace) -> int:
     period = safe_filename_label(args.period or default_weekly_period(), "weekly-report")
     report_name = f"{period}-{manager.project_id}.md"
     report_path = manager.reports_dir / report_name
-    report_path.write_text(build_weekly_report(manager, state, period), encoding="utf-8")
+    with file_lock(report_path):
+        atomic_write_text(report_path, build_weekly_report(manager, state, period))
     notification = f"Weekly context report is ready: {report_path}"
     manager.log_event(
         "weekly-report",
