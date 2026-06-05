@@ -31,6 +31,23 @@ Do not write dynamic task state into tracked repo docs. Do not require MCP for t
 
 For multi-worktree projects, keep one stable project identity. The CLI resolves projectId in this order: `--project-id`, `CONTEXT_HANDOFF_PROJECT_ID`, existing local sidecar `config.json`, Git remote/common-dir, then repo root name fallback. Use `--project-id` only when the inferred identity would be wrong. Use `--base-branch dev` when the feature base branch is not the inferred default; it persists in sidecar config.
 
+## Language Behavior
+
+Human-facing output can be generated in English or Simplified Chinese. Machine JSON keys, CLI action names, status enums, event names, branch names, paths, and Git output stay in English/original form.
+
+- In Chinese conversations, pass `--language zh-CN` to human-facing actions such as `handoff`, `resume-feature`, `audit-context`, `audit-project`, `weekly-report`, `draft-issue`, and `create-issue`.
+- In English conversations, pass `--language en` or omit the flag.
+- If the user asks to keep using Chinese or English for future context-handoff output, run `set-language --language zh-CN` or `set-language --language en`. This writes only to local sidecar config as `preferredLanguage`.
+- Markdown handoffs, reports, issue bodies, start summaries, warnings, findings messages, and backfill prompts follow the resolved language.
+
+Examples:
+
+```text
+Use $context-handoff to set human-facing output language to zh-CN.
+Use $context-handoff to generate this week's report in Chinese.
+Use $context-handoff to save a handoff in Chinese.
+```
+
 ## Actions
 
 - `start-feature`: Create or update the active task for the current branch/worktree. Use when the user starts a new feature or says what this branch is for.
@@ -45,6 +62,7 @@ For multi-worktree projects, keep one stable project identity. The CLI resolves 
 - `draft-issue`: Generate a dogfood/debug issue draft with Facts, Inferences, Unknowns, Reproduction, Suggested Fix, and Priority. This never requires GitHub CLI.
 - `create-issue`: Create a dogfood/debug GitHub issue only when the user explicitly asks or dogfood issue mode is enabled, GitHub CLI is authenticated, content is safe, and no likely duplicate is found.
 - `enable-dogfood-issue-mode` / `disable-dogfood-issue-mode`: Persist local sidecar permission for dogfood issue creation. This writes only to sidecar config.
+- `set-language`: Persist local sidecar language preference for human-facing output. This writes only to sidecar config.
 - `setup`: Safely create the local sidecar layout for this project.
 - `doctor`: Report readiness without installing tools or changing global Codex/GitHub configuration.
 

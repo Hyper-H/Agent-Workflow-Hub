@@ -76,6 +76,20 @@ Use $context-handoff to draft a dogfood issue for this problem.
 Use $context-handoff to finish this feature and generate PR text.
 ```
 
+## Human-Facing Localization
+
+Machine JSON keys, CLI action names, status enums, event names, paths, branch names, and Git output stay in English/original form. Human-facing Markdown and summary text can be English or Simplified Chinese.
+
+Default output is English. For one command, agents can pass `--language zh-CN` or `--language en` to actions that produce human-readable text, including `handoff`, `resume-feature`, `audit-context`, `audit-project`, `weekly-report`, `draft-issue`, and `create-issue`.
+
+To persist a local preference in sidecar config:
+
+```text
+Use $context-handoff to set human-facing output language to zh-CN.
+```
+
+This writes `preferredLanguage` only under `%USERPROFILE%\.codex\projects\<project-id>\config.json` and does not mutate the target repository.
+
 ## Sidecar State
 
 Dynamic state is local-only and stays outside your repository:
@@ -118,6 +132,7 @@ Base branch can be overridden with `--base-branch dev`; the value is persisted i
 - `draft-issue`: Generate a dogfood/debug issue draft without requiring GitHub CLI.
 - `create-issue`: Create a dogfood/debug issue only when explicitly requested, safe, authenticated, and not likely duplicated.
 - `enable-dogfood-issue-mode` / `disable-dogfood-issue-mode`: Persist local sidecar permission for dogfood issue creation.
+- `set-language`: Persist local sidecar language preference for human-facing output.
 - `snapshot`: Print current worktree Git facts for lightweight backfill.
 
 V1 `worktree-intake` and `worktree-handoff` have been merged into the unified `context-handoff` skill as `resume-feature` and `handoff`.
