@@ -2,9 +2,9 @@
 
 中文 | [English](./README.md)
 
-`context-handoff` 是一个自包含的 Codex skill，用来维护 AI 辅助 feature 开发中的本地项目和任务状态。它帮助 agent 在 branch、worktree、thread 之间恢复上下文，减少重复扫描和重复解释。
+`context-handoff` 是一个自包含的 Codex 本地项目上下文层，面向多 worktree 的 AI 辅助开发。它帮助 agent 恢复 feature 上下文、审计 project hub 状态，并在 branch、worktree、thread 之间协调任务状态，减少重复扫描和重复解释。
 
-日常入口是对话：
+日常入口是自然语言：
 
 ```text
 Use $context-handoff to resume this worktree.
@@ -18,6 +18,7 @@ skill 自带 Python sidecar CLI，位于 `skills/context-handoff/scripts/`。用
 - feature branch、worktree、thread 之间丢失任务状态。
 - 多 worktree 项目被拆成多个不相关的本地 projectId。
 - handoff、完成归档、audit、周报输出不一致。
+- project hub thread 把 sidecar 已登记任务误当成完整 worktree 全貌。
 - 动态 agent 状态误写进目标仓库文档或 feature PR。
 
 ## 安装
@@ -65,6 +66,10 @@ Use $context-handoff to audit this context before another agent takes over.
 ```
 
 ```text
+Use $context-handoff to audit this project hub across all worktrees.
+```
+
+```text
 Use $context-handoff to draft a dogfood issue for this problem.
 ```
 
@@ -106,13 +111,35 @@ base branch 可以用 `--base-branch dev` 覆盖；该值会持久化到本地 s
 - `start-feature`：把当前 branch/worktree 记录为 active task。
 - `resume-feature`：恢复紧凑上下文、stale detection，并输出 `startThreadSummary`。
 - `handoff`：保存未完成工作、下一步、facts、inferences、unknowns、validation 和 safety rules。
-- `audit-context`：报告缺 handoff、stale git 状态、缺 validation、缺 safetyRules、dirty worktree 和 backfill prompts。
+- `audit-context`：报告当前 worktree 缺 handoff、stale git 状态、缺 validation、缺 safetyRules、dirty worktree 和 backfill prompts。
+- `audit-project`：审计所有 Git worktree，对比真实 worktree 与 sidecar active tasks，并生成按 branch/worktree 分组的 backfill prompts。
+- `finish-feature`：归档任务并生成 PR 标题/正文；只有用户明确要求且 GitHub CLI 就绪时才创建 PR。
+- `project-status`：汇总紧凑 sidecar 项目状态。它不是完整 Git worktree inventory。
+- `weekly-report`：在 sidecar 的 `reports/` 目录生成给人看的 Markdown 周报。
 - `draft-issue`：生成 dogfood/debug issue draft，不需要 GitHub CLI。
 - `create-issue`：仅在用户明确要求、内容安全、GitHub CLI 已登录且未发现明显重复时创建 dogfood/debug issue。
 - `enable-dogfood-issue-mode` / `disable-dogfood-issue-mode`：把 dogfood issue 创建权限保存到本地 sidecar config。
-- `finish-feature`：归档任务并生成 PR 标题/正文；只有用户明确要求且 GitHub CLI 就绪时才创建 PR。
-- `project-status`：为 project hub thread 汇总当前项目状态。
-- `weekly-report`：在 sidecar 的 `reports/` 目录生成给人看的 Markdown 周报。
+- `snapshot`：输出当前 worktree 的 Git facts，用于轻量 backfill。
+
+V1 的 `worktree-intake` 和 `worktree-handoff` 已合并进统一的 `context-handoff` skill，分别对应 `resume-feature` 和 `handoff`。
+
+## Project Hub Inventory
+
+`project-status` 只报告 sidecar 已登记的 active tasks。它不会枚举每个 Git worktree。对于 project hub thread 或多 worktree 状态，请使用：
+
+```text
+Use $context-handoff to audit this project hub across all worktrees. Project id: my_project. Base branch: dev.
+```
+
+skill 会运行 `audit-project`，它使用 `git worktree list --porcelain` 枚举所有 worktree，逐个审计，并返回：
+
+- Git worktree 总数与 sidecar active task 总数。
+- 已登记和未登记的 worktree。
+- dirty、stale、缺 handoff、缺 validation、缺 safety rule 的 worktree。
+- sidecar 中记录了 task 但对应 worktree 已不存在的条目。
+- 按 branch/worktree 分组的 backfill prompts。
+
+如果请求的 projectId 被规范化，例如 `paus_robot_lab_host` 变成 `paus-robot-lab-host`，输出会显式提示这次 canonicalization。
 
 ## 可信 handoff
 
@@ -130,7 +157,7 @@ sidecar 也会记录 `headSha`、`upstream`、`dirtyFiles` 和 `dirtyFingerprint
 
 ## Dogfood Issue Mode
 
-Dogfood issue 默认只生成 draft。agent 可以用 `draft-issue` 产出可复制的标题和正文，不需要 GitHub CLI。issue body 必须区分：
+Dogfood issue 默认只生成 draft。agent 可以用 `draft-issue` 产出可复制的标题和正文，不需要 GitHub CLI。Issue body 必须区分：
 
 - Facts
 - Inferences
@@ -139,7 +166,7 @@ Dogfood issue 默认只生成 draft。agent 可以用 `draft-issue` 产出可复
 - Suggested Fix
 - Priority
 
-只有当用户明确要求创建 issue，或为本地 sidecar project 启用 `dogfoodIssueMode` 后，CLI 才允许自动创建 issue。自动创建的 issue 会带上 `agent-reported` 和 `needs-triage` labels。创建前会检查 `gh auth status`，尽量搜索相似 open issue，并在检测到敏感内容、密钥、本地隐私路径或过长日志时阻止创建并返回 draft。`dogfoodIssueMode` 只写入本机 sidecar config，不写入目标仓库。
+只有当用户明确要求创建 issue，或为本地 sidecar project 启用 `dogfoodIssueMode` 后，CLI 才允许自动创建 issue。自动创建的 issue 会带有 `agent-reported` 和 `needs-triage` labels。创建前会检查 `gh auth status`，尽量搜索相似 open issue，并在检测到敏感内容、密钥、本地隐私路径或过长日志时阻止创建并返回 draft。`dogfoodIssueMode` 只写入本机 sidecar config，不写入目标仓库。
 
 ## GitHub PR 行为
 

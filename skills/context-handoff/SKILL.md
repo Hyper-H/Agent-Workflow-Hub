@@ -1,11 +1,11 @@
 ---
 name: context-handoff
-description: Conversation-first project and feature lifecycle state for Codex worktrees using the local context sidecar CLI.
+description: Conversation-first local project context layer for Codex worktrees using the context sidecar CLI.
 ---
 
 # Context Handoff
 
-Use this skill when the user wants to start, resume, hand off, finish, inspect, or report on feature work for the current repository. Keep normal interaction conversational. The Python sidecar CLI is the implementation layer, not the primary user experience.
+Use this skill when the user wants to start, resume, hand off, finish, inspect, audit project hub state, or report on feature work for the current repository. Keep normal interaction conversational. The Python sidecar CLI is the implementation layer, not the primary user experience.
 
 ## Implementation Layer
 
@@ -37,9 +37,11 @@ For multi-worktree projects, keep one stable project identity. The CLI resolves 
 - `resume-feature`: Recover compact task state, latest handoff availability, stable docs, git status, and next-step hints. Use when taking over or continuing a branch.
 - `handoff`: Save incomplete work, next step, blockers, touched areas, facts, inferences, unknowns, validation commands/results/time, safety rules, and a concise thread summary.
 - `audit-context`: Check whether the current context is trustworthy before handoff/resume. It reports missing handoff, stale HEAD/dirty files, missing validation, missing safety rules, dirty worktree, and backfill prompts.
+- `audit-project`: Project hub inventory for all Git worktrees. It compares real `git worktree list` output with sidecar active tasks, audits every worktree, and reports untracked worktrees, stale tasks, missing validation/safety/handoff, and backfill prompts.
 - `finish-feature`: Finish and archive the active task. Create a PR only if the user explicitly asks and GitHub CLI is already installed and authenticated.
-- `project-status`: Return compact project state for a project hub thread or planning discussion.
+- `project-status`: Return compact sidecar project state for planning. This is not the full Git worktree inventory.
 - `weekly-report`: Generate a human-facing Markdown report under the sidecar `reports/` directory and reply with a short notification, not the full report by default.
+- `snapshot`: Print current worktree Git facts for lightweight backfill.
 - `draft-issue`: Generate a dogfood/debug issue draft with Facts, Inferences, Unknowns, Reproduction, Suggested Fix, and Priority. This never requires GitHub CLI.
 - `create-issue`: Create a dogfood/debug GitHub issue only when the user explicitly asks or dogfood issue mode is enabled, GitHub CLI is authenticated, content is safe, and no likely duplicate is found.
 - `enable-dogfood-issue-mode` / `disable-dogfood-issue-mode`: Persist local sidecar permission for dogfood issue creation. This writes only to sidecar config.
@@ -56,8 +58,23 @@ For multi-worktree projects, keep one stable project identity. The CLI resolves 
 - If the user says the task is done, run `finish-feature`. Add `--create-pr` only when the user explicitly requests PR creation.
 - If the user reports dogfood/debug feedback, prefer `draft-issue` by default and return the copyable title/body.
 - If the user explicitly says "create issue", "提 issue", or asks to enable dogfood issue mode, use `enable-dogfood-issue-mode` or `create-issue` as appropriate. Never create an issue from inferred intent alone.
-- If the user asks from a project hub thread, use `project-status` for compact status and `weekly-report` for a human update.
+- If the user asks from a project hub thread, asks for all worktrees, asks what is active across the project, or mentions a canonical repo with many worktrees, use `audit-project` first. Use `project-status` only for compact sidecar state and `weekly-report` for a human update.
 - If setup is uncertain, run `doctor` first. Explain any missing optional tools without installing them.
+
+## Project Hub / Multi-Worktree Protocol
+
+`project-status` only reports sidecar-known active tasks. It must not be treated as the complete project or worktree inventory.
+
+When the user asks for project hub status, whole-project status, all worktrees, branch/task coverage, or asks which feature threads need backfill:
+
+1. Run `audit-project` for the canonical repo/worktree with the same `--project-id` and `--base-branch` the user expects.
+2. If `audit-project` is unavailable, fall back to `project-status`, `git -C <canonical-repo> worktree list --porcelain`, and per-worktree `audit-context`.
+3. Report a table with branch, worktree path, headSha, dirty/clean, sidecarHit, task status, handoffAvailable, validationPresent, safetyRulesPresent, stale, blocker, and nextStep.
+4. Explicitly report total Git worktrees, total sidecar active tasks, tracked versus untracked worktrees, dirty worktrees, stale worktrees, missing validation/safety/handoff, and active sidecar tasks whose worktree no longer exists.
+5. Group concrete backfill prompts by branch/worktree.
+6. If a requested project id is canonicalized, say so once, for example `paus_robot_lab_host` -> `paus-robot-lab-host`.
+
+Never infer that sidecar active tasks are the full worktree inventory.
 
 ## Backfill Guidance
 
@@ -88,11 +105,17 @@ Before creating a GitHub issue, the CLI checks GitHub CLI authentication, search
 
 ## Output Style
 
-Return a short conversational summary:
+For single feature actions, return a short conversational summary:
 
 - Current task and status.
 - Latest useful next step.
 - Handoff or report path when a file was written.
 - PR URL when known, or generated PR title/body guidance when GitHub CLI is unavailable.
 
-Avoid pasting long sidecar JSON or full weekly reports unless the user asks for detail.
+For project hub actions, do not only return a short current-task summary. Always include compact inventory counts, a table of worktrees, and grouped backfill prompts. Avoid pasting long sidecar JSON or full weekly reports unless the user asks for detail.
+
+## Advanced / Legacy Actions
+
+- `init`: Legacy alias for sidecar setup. Prefer `setup`.
+- `intake`: Legacy low-level resume JSON. Prefer `resume-feature`.
+- `archive`: Advanced manual archive. Prefer `finish-feature` when a feature is complete.
