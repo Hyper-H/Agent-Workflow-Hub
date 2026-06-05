@@ -77,6 +77,20 @@ Use $context-handoff to draft a dogfood issue for this problem.
 Use $context-handoff to finish this feature and generate PR text.
 ```
 
+## 人类可读输出本地化
+
+机器 JSON keys、CLI action names、status enum、event names、路径、branch 名和 Git 输出始终保持英文或原始值。给人读的 Markdown、摘要、warnings、findings message 和 backfill prompts 可以输出英文或简体中文。
+
+默认语言是英文。对于单次命令，agent 可以给会产出人类可读文本的 action 传 `--language zh-CN` 或 `--language en`，包括 `handoff`、`resume-feature`、`audit-context`、`audit-project`、`weekly-report`、`draft-issue` 和 `create-issue`。
+
+如果要把偏好持久化到本地 sidecar config：
+
+```text
+Use $context-handoff to set human-facing output language to zh-CN.
+```
+
+这只会把 `preferredLanguage` 写到 `%USERPROFILE%\.codex\projects\<project-id>\config.json`，不会修改目标项目仓库。
+
 ## Sidecar 状态
 
 动态状态只保存在本机，不进入目标仓库：
@@ -119,6 +133,7 @@ base branch 可以用 `--base-branch dev` 覆盖；该值会持久化到本地 s
 - `draft-issue`：生成 dogfood/debug issue draft，不需要 GitHub CLI。
 - `create-issue`：仅在用户明确要求、内容安全、GitHub CLI 已登录且未发现明显重复时创建 dogfood/debug issue。
 - `enable-dogfood-issue-mode` / `disable-dogfood-issue-mode`：把 dogfood issue 创建权限保存到本地 sidecar config。
+- `set-language`：把人类可读输出语言偏好保存到本地 sidecar config。
 - `snapshot`：输出当前 worktree 的 Git facts，用于轻量 backfill。
 
 V1 的 `worktree-intake` 和 `worktree-handoff` 已合并进统一的 `context-handoff` skill，分别对应 `resume-feature` 和 `handoff`。

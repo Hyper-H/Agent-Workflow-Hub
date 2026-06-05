@@ -41,10 +41,210 @@ JSON_READ_RETRIES = 5
 JSON_READ_RETRY_SECONDS = 0.05
 FILE_LOCK_TIMEOUT_SECONDS = 10
 FILE_LOCK_POLL_SECONDS = 0.05
+SUPPORTED_LANGUAGES = {"en", "zh-CN"}
+
+
+TEXT = {
+    "en": {
+        "none": "None",
+        "none_recorded": "None recorded",
+        "not_recorded": "not recorded",
+        "not_run": "not run",
+        "handoff": "Handoff",
+        "meta": "Meta",
+        "goal": "Goal",
+        "goal_not_recorded": "Goal not recorded.",
+        "status": "Status",
+        "branch": "Branch",
+        "base_branch": "Base Branch",
+        "worktree": "Worktree",
+        "head_sha": "Head SHA",
+        "upstream": "Upstream",
+        "dirty_fingerprint": "Dirty Fingerprint",
+        "updated_at": "Updated At",
+        "current_objective": "Current Objective",
+        "current_objective_missing": "Current objective not recorded.",
+        "facts": "Facts",
+        "inferences": "Inferences",
+        "unknowns": "Unknowns",
+        "safety_rules": "Safety Rules",
+        "done": "Done",
+        "not_done": "Not Done",
+        "blocker": "Blocker",
+        "touched_areas": "Touched Areas",
+        "key_files": "Key Files",
+        "suggested_next_step": "Suggested Next Step",
+        "next_step_missing": "Next step not recorded.",
+        "validation_status": "Validation Status",
+        "validated_at": "Validated At",
+        "commands": "Commands",
+        "results": "Results",
+        "notes": "Notes",
+        "risks": "Risks",
+        "thread_summary": "Thread Summary",
+        "thread_summary_missing": "Thread summary not recorded.",
+        "summary_title": "Context Handoff Start Summary",
+        "handoff_available": "Handoff",
+        "stale": "Stale",
+        "stale_warning": "Stale Warning",
+        "stale_warning_text": "verify before trusting this handoff.",
+        "stale_warning_none": "none",
+        "stale_reasons": "Stale Reasons",
+        "validation": "Validation",
+        "last_validation_at": "Last validation at",
+        "command": "Command",
+        "result": "Result",
+        "immediate_next_step": "Immediate Next Step",
+        "risks_blockers": "Risks / Blockers",
+        "sidecar": "Sidecar",
+        "handoff_path": "Handoff path",
+        "weekly_report": "Weekly Report",
+        "snapshot": "Snapshot",
+        "active_tasks": "Active tasks",
+        "current_branch": "Current branch",
+        "active_work": "Active Work",
+        "no_active_tasks": "No active tasks recorded.",
+        "human_note": "Human Note",
+        "weekly_human_note": "Use this report as a short project update. Agents should prefer `project-state.json` plus latest handoff for compact context.",
+        "reproduction": "Reproduction",
+        "suggested_fix": "Suggested Fix",
+        "priority": "Priority",
+        "context": "Context",
+        "project": "Project",
+        "task": "Task",
+        "worktree_name": "Worktree Name",
+        "generated_at": "Generated At",
+        "finding_missing_handoff": "No latest handoff Markdown exists for the resolved task.",
+        "finding_stale": "Recorded task snapshot differs from current git state.",
+        "finding_missing_validation": "No validation time, command, result, or notes are recorded.",
+        "finding_missing_safety_rules": "No first-class safetyRules are recorded.",
+        "finding_dirty_worktree": "Current worktree has uncommitted changes.",
+        "finding_missing_task": "No sidecar task matched the current branch/worktree.",
+        "prompt_handoff": "Write a handoff with concrete done/not-done, next step, facts, inferences, unknowns, validation, and safety rules.",
+        "prompt_validation": "Record validation command(s), result(s), and validation time after running checks.",
+        "prompt_safety": "Record safetyRules that constrain the next agent's edits and repo hygiene.",
+        "prompt_stale": "Review current HEAD and dirty files before trusting the previous handoff.",
+        "prompt_facts": "Backfill objective facts from git status, recent commits, PR/issue text, or the current thread.",
+        "prompt_unknowns": "Name unknowns explicitly instead of filling missing context with guesses.",
+        "warning_worktree_count": "Git worktree count differs from sidecar active task count; project-status is not a full worktree inventory.",
+        "warning_project_id_canonicalized": "Project id was canonicalized from {requested} to {canonical}.",
+        "available": "available",
+        "missing": "missing",
+        "yes": "yes",
+        "no": "no",
+        "weekly_ready": "Weekly context report is ready: {path}",
+        "issue_draft_guidance": "Draft only by default. Ask to create issue or enable dogfood issue mode to allow creation.",
+    },
+    "zh-CN": {
+        "none": "无",
+        "none_recorded": "未记录",
+        "not_recorded": "未记录",
+        "not_run": "未运行",
+        "handoff": "交接",
+        "meta": "元信息",
+        "goal": "目标",
+        "goal_not_recorded": "未记录目标。",
+        "status": "状态",
+        "branch": "分支",
+        "base_branch": "基准分支",
+        "worktree": "工作树",
+        "head_sha": "HEAD SHA",
+        "upstream": "上游",
+        "dirty_fingerprint": "未提交变更指纹",
+        "updated_at": "更新时间",
+        "current_objective": "当前目标",
+        "current_objective_missing": "未记录当前目标。",
+        "facts": "事实",
+        "inferences": "推断",
+        "unknowns": "未知",
+        "safety_rules": "安全规则",
+        "done": "已完成",
+        "not_done": "未完成",
+        "blocker": "阻塞",
+        "touched_areas": "触达区域",
+        "key_files": "关键文件",
+        "suggested_next_step": "建议下一步",
+        "next_step_missing": "未记录下一步。",
+        "validation_status": "验证状态",
+        "validated_at": "验证时间",
+        "commands": "命令",
+        "results": "结果",
+        "notes": "备注",
+        "risks": "风险",
+        "thread_summary": "线程摘要",
+        "thread_summary_missing": "未记录线程摘要。",
+        "summary_title": "Context Handoff 接手摘要",
+        "handoff_available": "交接",
+        "stale": "过期",
+        "stale_warning": "过期警告",
+        "stale_warning_text": "信任此交接前请先核验当前状态。",
+        "stale_warning_none": "无",
+        "stale_reasons": "过期原因",
+        "validation": "验证",
+        "last_validation_at": "最近验证时间",
+        "command": "命令",
+        "result": "结果",
+        "immediate_next_step": "立即下一步",
+        "risks_blockers": "风险 / 阻塞",
+        "sidecar": "Sidecar",
+        "handoff_path": "交接文件",
+        "weekly_report": "周报",
+        "snapshot": "快照",
+        "active_tasks": "活跃任务",
+        "current_branch": "当前分支",
+        "active_work": "活跃工作",
+        "no_active_tasks": "没有记录活跃任务。",
+        "human_note": "人工备注",
+        "weekly_human_note": "将此报告作为简短项目更新。Agent 应优先使用 `project-state.json` 和最新 handoff 来恢复紧凑上下文。",
+        "reproduction": "复现步骤",
+        "suggested_fix": "建议修复",
+        "priority": "优先级",
+        "context": "上下文",
+        "project": "项目",
+        "task": "任务",
+        "worktree_name": "工作树名称",
+        "generated_at": "生成时间",
+        "finding_missing_handoff": "未找到该任务的最新 handoff Markdown。",
+        "finding_stale": "记录的任务快照与当前 Git 状态不一致。",
+        "finding_missing_validation": "未记录验证时间、命令、结果或备注。",
+        "finding_missing_safety_rules": "未记录一等字段 safetyRules。",
+        "finding_dirty_worktree": "当前 worktree 存在未提交变更。",
+        "finding_missing_task": "当前分支/worktree 没有匹配的 sidecar task。",
+        "prompt_handoff": "补写 handoff，包含具体 done/not-done、下一步、事实、推断、未知、验证和安全规则。",
+        "prompt_validation": "运行检查后记录验证命令、结果和验证时间。",
+        "prompt_safety": "记录约束下一位 agent 修改和仓库卫生的 safetyRules。",
+        "prompt_stale": "信任旧 handoff 前，先核对当前 HEAD 和 dirty files。",
+        "prompt_facts": "从 git status、近期 commits、PR/issue 文本或当前 thread 补录客观事实。",
+        "prompt_unknowns": "明确写出未知项，不要用猜测填补缺失上下文。",
+        "warning_worktree_count": "Git worktree 数量与 sidecar active task 数量不一致；project-status 不是完整 worktree 清单。",
+        "warning_project_id_canonicalized": "Project id 已从 {requested} 规范化为 {canonical}。",
+        "available": "可用",
+        "missing": "缺失",
+        "yes": "是",
+        "no": "否",
+        "weekly_ready": "周报已生成：{path}",
+        "issue_draft_guidance": "默认只生成 draft。用户要求创建 issue 或启用 dogfood issue mode 后才允许创建。",
+    },
+}
 
 
 def now_iso() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def normalize_language(value: str) -> str:
+    value = (value or "").strip()
+    if value.lower() in {"zh", "zh-cn", "zh_cn", "cn", "chinese"}:
+        return "zh-CN"
+    if value.lower() in {"en", "en-us", "en_us", "english"}:
+        return "en"
+    return value if value in SUPPORTED_LANGUAGES else "en"
+
+
+def tr(language: str, key: str, **fields: Any) -> str:
+    language = normalize_language(language)
+    template = TEXT.get(language, TEXT["en"]).get(key, TEXT["en"].get(key, key))
+    return template.format(**fields) if fields else template
 
 
 def slugify(value: str) -> str:
@@ -668,6 +868,7 @@ class SidecarManager:
         config.setdefault("projectId", self.project_id)
         config.setdefault("canonicalRepoRoot", config.get("repoRoot") or str(self.git.repo_root))
         config.setdefault("repoRoot", config["canonicalRepoRoot"])
+        config["preferredLanguage"] = normalize_language(config.get("preferredLanguage") or "en")
         config["lastWorktreePath"] = str(self.git.worktree_path)
         config["currentWorktreePath"] = str(self.git.worktree_path)
         if self.base_branch_override:
@@ -687,6 +888,8 @@ class SidecarManager:
         config["projectId"] = self.project_id
         config.setdefault("canonicalRepoRoot", config.get("repoRoot") or str(self.git.repo_root))
         config.setdefault("repoRoot", config["canonicalRepoRoot"])
+        if "preferredLanguage" in config:
+            config["preferredLanguage"] = normalize_language(config.get("preferredLanguage") or "en")
         config["gitCommonDir"] = str(self.git.common_dir) if self.git.common_dir else ""
         config["remoteUrl"] = self.git.remote_url
         config["lastWorktreePath"] = str(self.git.worktree_path)
@@ -953,7 +1156,7 @@ def stable_doc_status(repo_root: Path) -> list[dict[str, str]]:
     ]
 
 
-def build_handoff_markdown(task: dict[str, Any], args: argparse.Namespace, manager: SidecarManager) -> str:
+def build_handoff_markdown(task: dict[str, Any], args: argparse.Namespace, manager: SidecarManager, language: str = "en") -> str:
     done_items = [item.strip() for item in (args.done or []) if item.strip()][:5]
     not_done_items = [item.strip() for item in (args.not_done or []) if item.strip()][:5]
     risk_items = [item.strip() for item in (args.risks or []) if item.strip()]
@@ -969,72 +1172,72 @@ def build_handoff_markdown(task: dict[str, Any], args: argparse.Namespace, manag
     validation_results = validation.get("results") or []
     validation_notes = validation.get("notes") or ""
     validation_at = validation.get("validatedAt") or ""
-    current_objective = args.current_objective or task.get("goal") or "Current objective not recorded."
+    current_objective = args.current_objective or task.get("goal") or tr(language, "current_objective_missing")
     facts = task.get("facts") or []
     inferences = task.get("inferences") or []
     unknowns = task.get("unknowns") or []
     safety_rules = task.get("safetyRules") or []
 
     lines = [
-        f"# Handoff: {task['taskId']}",
+        f"# {tr(language, 'handoff')}: {task['taskId']}",
         "",
-        "## Meta",
-        f"- Goal: {task.get('goal') or 'Goal not recorded.'}",
-        f"- Status: {task.get('status') or 'active'}",
-        f"- Branch: {task.get('branch') or manager.git.branch}",
-        f"- Base Branch: {task.get('baseBranch') or manager.git.base_branch}",
-        f"- Worktree: {task.get('worktreePath') or str(manager.git.worktree_path)}",
-        f"- Head SHA: {task.get('headSha') or manager.git.head_sha or 'unknown'}",
-        f"- Upstream: {task.get('upstream') or manager.git.upstream or 'None'}",
-        f"- Dirty Fingerprint: {task.get('dirtyFingerprint') or 'clean'}",
+        f"## {tr(language, 'meta')}",
+        f"- {tr(language, 'goal')}: {task.get('goal') or tr(language, 'goal_not_recorded')}",
+        f"- {tr(language, 'status')}: {task.get('status') or 'active'}",
+        f"- {tr(language, 'branch')}: {task.get('branch') or manager.git.branch}",
+        f"- {tr(language, 'base_branch')}: {task.get('baseBranch') or manager.git.base_branch}",
+        f"- {tr(language, 'worktree')}: {task.get('worktreePath') or str(manager.git.worktree_path)}",
+        f"- {tr(language, 'head_sha')}: {task.get('headSha') or manager.git.head_sha or 'unknown'}",
+        f"- {tr(language, 'upstream')}: {task.get('upstream') or manager.git.upstream or tr(language, 'none')}",
+        f"- {tr(language, 'dirty_fingerprint')}: {task.get('dirtyFingerprint') or 'clean'}",
         f"- PR: {pr_url or 'None'}",
         f"- PR Search: {pr_search_url or 'None'}",
-        f"- Updated At: {task.get('updatedAt') or now_iso()}",
+        f"- {tr(language, 'updated_at')}: {task.get('updatedAt') or now_iso()}",
         "",
-        "## Current Objective",
+        f"## {tr(language, 'current_objective')}",
         current_objective,
         "",
-        "## Facts",
+        f"## {tr(language, 'facts')}",
     ]
-    lines.extend([f"- {item}" for item in facts] or ["- None recorded"])
-    lines.extend(["", "## Inferences"])
-    lines.extend([f"- {item}" for item in inferences] or ["- None recorded"])
-    lines.extend(["", "## Unknowns"])
-    lines.extend([f"- {item}" for item in unknowns] or ["- None recorded"])
-    lines.extend(["", "## Safety Rules"])
-    lines.extend([f"- {item}" for item in safety_rules] or ["- None recorded"])
+    lines.extend([f"- {item}" for item in facts] or [f"- {tr(language, 'none_recorded')}"])
+    lines.extend(["", f"## {tr(language, 'inferences')}"])
+    lines.extend([f"- {item}" for item in inferences] or [f"- {tr(language, 'none_recorded')}"])
+    lines.extend(["", f"## {tr(language, 'unknowns')}"])
+    lines.extend([f"- {item}" for item in unknowns] or [f"- {tr(language, 'none_recorded')}"])
+    lines.extend(["", f"## {tr(language, 'safety_rules')}"])
+    lines.extend([f"- {item}" for item in safety_rules] or [f"- {tr(language, 'none_recorded')}"])
     lines.extend([
         "",
-        "## Done",
+        f"## {tr(language, 'done')}",
     ])
-    lines.extend([f"- {item}" for item in done_items] or ["- None"])
-    lines.extend(["", "## Not Done"])
-    lines.extend([f"- {item}" for item in not_done_items] or ["- None"])
-    lines.extend(["", "## Blocker", f"- {task.get('blocker') or 'None'}", "", "## Touched Areas"])
-    lines.extend([f"- {item}" for item in touched_areas] or ["- None"])
-    lines.extend(["", "## Key Files"])
-    lines.extend([f"- {item}" for item in key_files] or ["- None"])
-    lines.extend(["", "## Suggested Next Step", f"- {task.get('nextStep') or 'Next step not recorded.'}"])
+    lines.extend([f"- {item}" for item in done_items] or [f"- {tr(language, 'none')}"])
+    lines.extend(["", f"## {tr(language, 'not_done')}"])
+    lines.extend([f"- {item}" for item in not_done_items] or [f"- {tr(language, 'none')}"])
+    lines.extend(["", f"## {tr(language, 'blocker')}", f"- {task.get('blocker') or tr(language, 'none')}", "", f"## {tr(language, 'touched_areas')}"])
+    lines.extend([f"- {item}" for item in touched_areas] or [f"- {tr(language, 'none')}"])
+    lines.extend(["", f"## {tr(language, 'key_files')}"])
+    lines.extend([f"- {item}" for item in key_files] or [f"- {tr(language, 'none')}"])
+    lines.extend(["", f"## {tr(language, 'suggested_next_step')}", f"- {task.get('nextStep') or tr(language, 'next_step_missing')}"])
     lines.extend(
         [
             "",
-            "## Validation Status",
-            f"- Validated At: {validation_at or 'Not recorded'}",
-            "- Commands:",
+            f"## {tr(language, 'validation_status')}",
+            f"- {tr(language, 'validated_at')}: {validation_at or tr(language, 'not_recorded')}",
+            f"- {tr(language, 'commands')}:",
         ]
     )
-    lines.extend([f"  - {item.get('command')}: {item.get('recordedAt', 'time not recorded')}" for item in validation_commands] or ["  - None"])
-    lines.extend(["- Results:"])
-    lines.extend([f"  - {item.get('result')}: {item.get('recordedAt', 'time not recorded')}" for item in validation_results] or ["  - None"])
+    lines.extend([f"  - {item.get('command')}: {item.get('recordedAt', tr(language, 'not_recorded'))}" for item in validation_commands] or [f"  - {tr(language, 'none')}"])
+    lines.extend([f"- {tr(language, 'results')}:"])
+    lines.extend([f"  - {item.get('result')}: {item.get('recordedAt', tr(language, 'not_recorded'))}" for item in validation_results] or [f"  - {tr(language, 'none')}"])
     lines.extend(
         [
-            f"- Notes: {validation_notes or 'None'}",
+            f"- {tr(language, 'notes')}: {validation_notes or tr(language, 'none')}",
             "",
-            "## Risks",
+            f"## {tr(language, 'risks')}",
         ]
     )
-    lines.extend([f"- {item}" for item in risk_items] or ["- None"])
-    lines.extend(["", "## Thread Summary", task.get("lastThreadSummary") or "Thread summary not recorded.", ""])
+    lines.extend([f"- {item}" for item in risk_items] or [f"- {tr(language, 'none')}"])
+    lines.extend(["", f"## {tr(language, 'thread_summary')}", task.get("lastThreadSummary") or tr(language, 'thread_summary_missing'), ""])
     return "\n".join(lines)
 
 
@@ -1058,38 +1261,38 @@ def build_pr_text(task: dict[str, Any], manager: SidecarManager, args: argparse.
     return title, body
 
 
-def issue_list(values: list[str] | None, empty: str = "Not recorded.") -> list[str]:
+def issue_list(values: list[str] | None, language: str = "en") -> list[str]:
     items = [short_text(item, max_len=500) for item in (values or []) if item and item.strip()]
-    return [f"- {item}" for item in items] or [f"- {empty}"]
+    return [f"- {item}" for item in items] or [f"- {tr(language, 'not_recorded')}"]
 
 
-def build_issue_text(manager: SidecarManager, args: argparse.Namespace) -> tuple[str, str]:
+def build_issue_text(manager: SidecarManager, args: argparse.Namespace, language: str = "en") -> tuple[str, str]:
     title = short_text(args.issue_title or "Dogfood feedback from context-handoff", max_len=120)
     priority = short_text(args.priority or "triage-needed", max_len=80)
     lines = [
-        "## Facts",
-        *issue_list(args.facts),
+        f"## {tr(language, 'facts')}",
+        *issue_list(args.facts, language),
         "",
-        "## Inferences",
-        *issue_list(args.inferences),
+        f"## {tr(language, 'inferences')}",
+        *issue_list(args.inferences, language),
         "",
-        "## Unknowns",
-        *issue_list(args.unknowns),
+        f"## {tr(language, 'unknowns')}",
+        *issue_list(args.unknowns, language),
         "",
-        "## Reproduction",
-        *issue_list(args.reproduction),
+        f"## {tr(language, 'reproduction')}",
+        *issue_list(args.reproduction, language),
         "",
-        "## Suggested Fix",
-        *issue_list(args.suggested_fix),
+        f"## {tr(language, 'suggested_fix')}",
+        *issue_list(args.suggested_fix, language),
         "",
-        "## Priority",
+        f"## {tr(language, 'priority')}",
         f"- {priority}",
         "",
-        "## Context",
-        f"- Project: {manager.project_id}",
-        f"- Branch: {manager.git.branch}",
-        f"- Worktree Name: {manager.git.worktree_path.name}",
-        f"- Generated At: {now_iso()}",
+        f"## {tr(language, 'context')}",
+        f"- {tr(language, 'project')}: {manager.project_id}",
+        f"- {tr(language, 'branch')}: {manager.git.branch}",
+        f"- {tr(language, 'worktree_name')}: {manager.git.worktree_path.name}",
+        f"- {tr(language, 'generated_at')}: {now_iso()}",
     ]
     return title, "\n".join(lines) + "\n"
 
@@ -1234,11 +1437,12 @@ def build_start_thread_summary(
     task: dict[str, Any],
     handoff_available: bool,
     stale: dict[str, Any],
+    language: str = "en",
 ) -> str:
-    def add_limited_items(lines: list[str], title: str, items: list[Any], *, limit: int, empty: str = "not recorded") -> None:
+    def add_limited_items(lines: list[str], title: str, items: list[Any], *, limit: int, empty: str | None = None) -> None:
         values = [str(item).strip() for item in items if str(item).strip()]
         lines.append(f"{title}:")
-        lines.extend([f"- {short_text(item, max_len=140)}" for item in values[:limit]] or [f"- {empty}"])
+        lines.extend([f"- {short_text(item, max_len=140)}" for item in values[:limit]] or [f"- {empty or tr(language, 'not_recorded')}"])
 
     validation = task.get("validation") or {}
     validation_commands = validation.get("commands") or []
@@ -1252,43 +1456,43 @@ def build_start_thread_summary(
         risks = [blocker, *risks]
 
     lines = [
-        "Context Handoff Start Summary",
-        f"Project: {manager.project_id}",
-        f"Task: {task.get('taskId') or 'not recorded'}",
-        f"Branch: {task.get('branch') or manager.git.branch}",
-        f"Worktree: {task.get('worktreePath') or str(manager.git.worktree_path)}",
-        f"Status: {task.get('status') or 'active'}",
-        f"Handoff: {'available' if handoff_available else 'missing'}",
-        f"Stale: {'yes' if stale.get('isStale') else 'no'}",
+        tr(language, "summary_title"),
+        f"{tr(language, 'project')}: {manager.project_id}",
+        f"{tr(language, 'task')}: {task.get('taskId') or tr(language, 'not_recorded')}",
+        f"{tr(language, 'branch')}: {task.get('branch') or manager.git.branch}",
+        f"{tr(language, 'worktree')}: {task.get('worktreePath') or str(manager.git.worktree_path)}",
+        f"{tr(language, 'status')}: {task.get('status') or 'active'}",
+        f"{tr(language, 'handoff_available')}: {tr(language, 'available') if handoff_available else tr(language, 'missing')}",
+        f"{tr(language, 'stale')}: {tr(language, 'yes') if stale.get('isStale') else tr(language, 'no')}",
     ]
     if stale.get("isStale"):
-        lines.append("Stale Warning: verify before trusting this handoff.")
+        lines.append(f"{tr(language, 'stale_warning')}: {tr(language, 'stale_warning_text')}")
     else:
-        lines.append("Stale Warning: none")
-    add_limited_items(lines, "Stale Reasons", stale_reasons, limit=2, empty="none")
-    add_limited_items(lines, "Safety Rules", task.get("safetyRules") or [], limit=3)
-    add_limited_items(lines, "Current Objective", [task.get("goal") or ""], limit=1)
-    add_limited_items(lines, "Facts", task.get("facts") or [], limit=3)
-    add_limited_items(lines, "Inferences", task.get("inferences") or [], limit=2)
-    add_limited_items(lines, "Unknowns", task.get("unknowns") or [], limit=2)
-    lines.append("Validation:")
+        lines.append(f"{tr(language, 'stale_warning')}: {tr(language, 'stale_warning_none')}")
+    add_limited_items(lines, tr(language, "stale_reasons"), stale_reasons, limit=2, empty=tr(language, "none"))
+    add_limited_items(lines, tr(language, "safety_rules"), task.get("safetyRules") or [], limit=3)
+    add_limited_items(lines, tr(language, "current_objective"), [task.get("goal") or ""], limit=1)
+    add_limited_items(lines, tr(language, "facts"), task.get("facts") or [], limit=3)
+    add_limited_items(lines, tr(language, "inferences"), task.get("inferences") or [], limit=2)
+    add_limited_items(lines, tr(language, "unknowns"), task.get("unknowns") or [], limit=2)
+    lines.append(f"{tr(language, 'validation')}:")
     if validation.get("validatedAt") or last_command or last_result or validation.get("notes"):
         lines.extend(
             [
-                f"- Last validation at: {validation.get('validatedAt') or 'not recorded'}",
-                f"- Command: {last_command.get('command') or 'not recorded'}",
-                f"- Result: {last_result.get('result') or 'not recorded'}",
+                f"- {tr(language, 'last_validation_at')}: {validation.get('validatedAt') or tr(language, 'not_recorded')}",
+                f"- {tr(language, 'command')}: {last_command.get('command') or tr(language, 'not_recorded')}",
+                f"- {tr(language, 'result')}: {last_result.get('result') or tr(language, 'not_recorded')}",
             ]
         )
     else:
-        lines.append("- not recorded")
-    add_limited_items(lines, "Immediate Next Step", [task.get("nextStep") or ""], limit=1)
-    add_limited_items(lines, "Risks / Blockers", risks, limit=2, empty="none")
-    add_limited_items(lines, "Touched Areas", task.get("touchedAreas") or manager.default_touched_areas(), limit=3, empty="none")
+        lines.append(f"- {tr(language, 'not_recorded')}")
+    add_limited_items(lines, tr(language, "immediate_next_step"), [task.get("nextStep") or ""], limit=1)
+    add_limited_items(lines, tr(language, "risks_blockers"), risks, limit=2, empty=tr(language, "none"))
+    add_limited_items(lines, tr(language, "touched_areas"), task.get("touchedAreas") or manager.default_touched_areas(), limit=3, empty=tr(language, "none"))
     lines.extend(
         [
-            "Sidecar:",
-            f"- Handoff path: {manager.handoff_path_for(task)}",
+            f"{tr(language, 'sidecar')}:",
+            f"- {tr(language, 'handoff_path')}: {manager.handoff_path_for(task)}",
         ]
     )
     return "\n".join(lines[:40])
@@ -1489,33 +1693,33 @@ def archive_task(
     }
 
 
-def build_weekly_report(manager: SidecarManager, state: dict[str, Any], period: str) -> str:
+def build_weekly_report(manager: SidecarManager, state: dict[str, Any], period: str, language: str = "en") -> str:
     active_tasks = state.get("activeTasks", [])
     lines = [
-        f"# Weekly Report: {manager.project_id}",
+        f"# {tr(language, 'weekly_report')}: {manager.project_id}",
         "",
         f"- Period: {period}",
-        f"- Generated At: {now_iso()}",
-        f"- Sidecar: {manager.sidecar_root}",
+        f"- {tr(language, 'generated_at')}: {now_iso()}",
+        f"- {tr(language, 'sidecar')}: {manager.sidecar_root}",
         "",
-        "## Snapshot",
-        f"- Active tasks: {state.get('activeTaskCount', 0)}",
-        f"- Current branch: {state.get('currentBranch') or 'unknown'}",
+        f"## {tr(language, 'snapshot')}",
+        f"- {tr(language, 'active_tasks')}: {state.get('activeTaskCount', 0)}",
+        f"- {tr(language, 'current_branch')}: {state.get('currentBranch') or 'unknown'}",
         "",
-        "## Active Work",
+        f"## {tr(language, 'active_work')}",
     ]
     if active_tasks:
         for task in active_tasks:
             lines.extend(
                 [
-                    f"- {task.get('taskId')}: {task.get('goal') or 'No goal recorded'}",
-                    f"  Status: {task.get('status') or 'active'}; next step: {task.get('nextStep') or 'None'}",
+                    f"- {task.get('taskId')}: {task.get('goal') or tr(language, 'goal_not_recorded')}",
+                    f"  {tr(language, 'status')}: {task.get('status') or 'active'}; {tr(language, 'suggested_next_step')}: {task.get('nextStep') or tr(language, 'none')}",
                 ]
             )
     else:
-        lines.append("- No active tasks recorded.")
+        lines.append(f"- {tr(language, 'no_active_tasks')}")
 
-    lines.extend(["", "## Human Note", "Use this report as a short project update. Agents should prefer `project-state.json` plus latest handoff for compact context."])
+    lines.extend(["", f"## {tr(language, 'human_note')}", tr(language, "weekly_human_note")])
     return "\n".join(lines) + "\n"
 
 
@@ -1525,6 +1729,14 @@ def make_manager(args: argparse.Namespace) -> SidecarManager:
         project_id_override=getattr(args, "project_id", "") or "",
         base_branch_override=getattr(args, "base_branch", "") or "",
     )
+
+
+def resolve_language(args: argparse.Namespace, manager: SidecarManager) -> str:
+    explicit = getattr(args, "language", None)
+    if explicit:
+        return normalize_language(explicit)
+    config = manager.sidecar_config()
+    return normalize_language(config.get("preferredLanguage") or "en")
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -1688,6 +1900,7 @@ def cmd_start_feature(args: argparse.Namespace) -> int:
 def cmd_resume_feature(args: argparse.Namespace) -> int:
     started_at = time.perf_counter()
     manager = make_manager(args)
+    language = resolve_language(args, manager)
     payload = manager.load_active_tasks()
     task, conflicts = manager.find_task(payload)
     sidecar_hit = task is not None
@@ -1707,7 +1920,7 @@ def cmd_resume_feature(args: argparse.Namespace) -> int:
             "dirtyFiles": manager.git.dirty_files,
             "dirtyFingerprint": manager.git.dirty_fingerprint,
             "stale": stale,
-            "startThreadSummary": build_start_thread_summary(manager, task, snapshot["handoffAvailable"], stale),
+            "startThreadSummary": build_start_thread_summary(manager, task, snapshot["handoffAvailable"], stale, language),
             "missingContext": [],
             "provisional": not sidecar_hit,
         }
@@ -1735,7 +1948,7 @@ def cmd_resume_feature(args: argparse.Namespace) -> int:
     return 0
 
 
-def audit_context_payload(manager: SidecarManager, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+def audit_context_payload(manager: SidecarManager, payload: dict[str, Any] | None = None, language: str = "en") -> dict[str, Any]:
     payload = payload or manager.load_active_tasks()
     task, conflicts = manager.find_task(payload)
     sidecar_hit = task is not None
@@ -1758,31 +1971,31 @@ def audit_context_payload(manager: SidecarManager, payload: dict[str, Any] | Non
 
     findings: list[dict[str, Any]] = []
     if missing_handoff:
-        findings.append({"kind": "missing-handoff", "message": "No latest handoff Markdown exists for the resolved task."})
+        findings.append({"kind": "missing-handoff", "message": tr(language, "finding_missing_handoff")})
     if stale["isStale"]:
-        findings.append({"kind": "stale", "message": "Recorded task snapshot differs from current git state.", "details": stale})
+        findings.append({"kind": "stale", "message": tr(language, "finding_stale"), "details": stale})
     if missing_validation:
-        findings.append({"kind": "missing-validation", "message": "No validation time, command, result, or notes are recorded."})
+        findings.append({"kind": "missing-validation", "message": tr(language, "finding_missing_validation")})
     if missing_safety_rules:
-        findings.append({"kind": "missing-safety-rules", "message": "No first-class safetyRules are recorded."})
+        findings.append({"kind": "missing-safety-rules", "message": tr(language, "finding_missing_safety_rules")})
     if dirty_worktree:
-        findings.append({"kind": "dirty-worktree", "message": "Current worktree has uncommitted changes.", "files": manager.git.dirty_files})
+        findings.append({"kind": "dirty-worktree", "message": tr(language, "finding_dirty_worktree"), "files": manager.git.dirty_files})
     if not sidecar_hit:
-        findings.append({"kind": "missing-task", "message": "No sidecar task matched the current branch/worktree."})
+        findings.append({"kind": "missing-task", "message": tr(language, "finding_missing_task")})
 
     backfill_prompts = []
     if missing_handoff:
-        backfill_prompts.append("Write a handoff with concrete done/not-done, next step, facts, inferences, unknowns, validation, and safety rules.")
+        backfill_prompts.append(tr(language, "prompt_handoff"))
     if missing_validation:
-        backfill_prompts.append("Record validation command(s), result(s), and validation time after running checks.")
+        backfill_prompts.append(tr(language, "prompt_validation"))
     if missing_safety_rules:
-        backfill_prompts.append("Record safetyRules that constrain the next agent's edits and repo hygiene.")
+        backfill_prompts.append(tr(language, "prompt_safety"))
     if stale["isStale"]:
-        backfill_prompts.append("Review current HEAD and dirty files before trusting the previous handoff.")
+        backfill_prompts.append(tr(language, "prompt_stale"))
     if not task.get("facts"):
-        backfill_prompts.append("Backfill objective facts from git status, recent commits, PR/issue text, or the current thread.")
+        backfill_prompts.append(tr(language, "prompt_facts"))
     if not task.get("unknowns"):
-        backfill_prompts.append("Name unknowns explicitly instead of filling missing context with guesses.")
+        backfill_prompts.append(tr(language, "prompt_unknowns"))
 
     return {
         "projectId": manager.project_id,
@@ -1808,8 +2021,9 @@ def audit_context_payload(manager: SidecarManager, payload: dict[str, Any] | Non
 def cmd_audit_context(args: argparse.Namespace) -> int:
     started_at = time.perf_counter()
     manager = make_manager(args)
+    language = resolve_language(args, manager)
     payload = manager.load_active_tasks()
-    output = audit_context_payload(manager, payload)
+    output = audit_context_payload(manager, payload, language)
     task = output["task"]
     output.pop("task", None)
     manager.log_event(
@@ -1870,6 +2084,7 @@ def worktree_audit_row(worktree_info: dict[str, str], audit: dict[str, Any], man
 def cmd_audit_project(args: argparse.Namespace) -> int:
     started_at = time.perf_counter()
     manager = make_manager(args)
+    language = resolve_language(args, manager)
     payload = manager.load_active_tasks()
     tasks = payload.get("tasks", [])
     state = manager.write_project_state(tasks)
@@ -1887,7 +2102,7 @@ def cmd_audit_project(args: argparse.Namespace) -> int:
                 project_id_override=getattr(args, "project_id", "") or manager.project_id,
                 base_branch_override=getattr(args, "base_branch", "") or manager.git.base_branch,
             )
-            audit = audit_context_payload(wt_manager, payload)
+            audit = audit_context_payload(wt_manager, payload, language)
             rows.append(worktree_audit_row(item, audit, wt_manager))
         except Exception as exc:  # Keep hub inventory resilient across broken worktrees.
             errors.append({"worktreePath": path, "error": short_text(str(exc), max_len=500)})
@@ -1981,10 +2196,15 @@ def cmd_audit_project(args: argparse.Namespace) -> int:
     if worktree_error:
         output["errors"].append({"worktreePath": str(manager.git.repo_root), "error": short_text(worktree_error, max_len=500)})
     if summary_counts["gitWorktrees"] != summary_counts["sidecarActiveTasks"]:
-        output["warnings"].append("Git worktree count differs from sidecar active task count; project-status is not a full worktree inventory.")
+        output["warnings"].append(tr(language, "warning_worktree_count"))
     if output["projectIdCanonicalization"]["changed"]:
         output["warnings"].append(
-            f"Project id was canonicalized from {output['projectIdCanonicalization']['requested']} to {output['projectIdCanonicalization']['canonical']}."
+            tr(
+                language,
+                "warning_project_id_canonicalized",
+                requested=output["projectIdCanonicalization"]["requested"],
+                canonical=output["projectIdCanonicalization"]["canonical"],
+            )
         )
 
     manager.log_event(
@@ -2005,13 +2225,14 @@ def cmd_audit_project(args: argparse.Namespace) -> int:
 def cmd_handoff(args: argparse.Namespace) -> int:
     started_at = time.perf_counter()
     manager = make_manager(args)
+    language = resolve_language(args, manager)
     payload = manager.load_active_tasks()
     task, _ = manager.find_task(payload)
     sidecar_hit = task is not None
     task = manager.upsert_task(payload, task, args)
 
     handoff_path = manager.handoff_path_for(task)
-    handoff_content = build_handoff_markdown(task, args, manager)
+    handoff_content = build_handoff_markdown(task, args, manager, language)
     with file_lock(handoff_path):
         atomic_write_text(handoff_path, handoff_content)
     manager.save_active_tasks(payload)
@@ -2112,14 +2333,15 @@ def cmd_project_status(args: argparse.Namespace) -> int:
 def cmd_weekly_report(args: argparse.Namespace) -> int:
     started_at = time.perf_counter()
     manager = make_manager(args)
+    language = resolve_language(args, manager)
     payload = manager.load_active_tasks()
     state = manager.write_project_state(payload.get("tasks", []))
     period = safe_filename_label(args.period or default_weekly_period(), "weekly-report")
     report_name = f"{period}-{manager.project_id}.md"
     report_path = manager.reports_dir / report_name
     with file_lock(report_path):
-        atomic_write_text(report_path, build_weekly_report(manager, state, period))
-    notification = f"Weekly context report is ready: {report_path}"
+        atomic_write_text(report_path, build_weekly_report(manager, state, period, language))
+    notification = tr(language, "weekly_ready", path=report_path)
     manager.log_event(
         "weekly-report",
         started_at=started_at,
@@ -2143,8 +2365,8 @@ def cmd_weekly_report(args: argparse.Namespace) -> int:
     return 0
 
 
-def issue_output(manager: SidecarManager, args: argparse.Namespace, *, create: bool) -> dict[str, Any]:
-    title, body = build_issue_text(manager, args)
+def issue_output(manager: SidecarManager, args: argparse.Namespace, *, create: bool, language: str = "en") -> dict[str, Any]:
+    title, body = build_issue_text(manager, args, language)
     sensitive_findings = sensitive_issue_findings(title, body)
     config = manager.sidecar_config()
     dogfood_enabled = bool(config.get("dogfoodIssueMode"))
@@ -2158,7 +2380,7 @@ def issue_output(manager: SidecarManager, args: argparse.Namespace, *, create: b
         "body": body,
         "labels": DOGFOOD_ISSUE_LABELS,
         "sensitiveFindings": sensitive_findings,
-        "guidance": "Draft only by default. Ask to create issue or enable dogfood issue mode to allow creation.",
+        "guidance": tr(language, "issue_draft_guidance"),
     }
     if not create:
         return output
@@ -2171,7 +2393,8 @@ def issue_output(manager: SidecarManager, args: argparse.Namespace, *, create: b
 def cmd_draft_issue(args: argparse.Namespace) -> int:
     started_at = time.perf_counter()
     manager = make_manager(args)
-    output = issue_output(manager, args, create=False)
+    language = resolve_language(args, manager)
+    output = issue_output(manager, args, create=False, language=language)
     manager.log_event(
         "draft-issue",
         started_at=started_at,
@@ -2187,7 +2410,8 @@ def cmd_draft_issue(args: argparse.Namespace) -> int:
 def cmd_create_issue(args: argparse.Namespace) -> int:
     started_at = time.perf_counter()
     manager = make_manager(args)
-    output = issue_output(manager, args, create=True)
+    language = resolve_language(args, manager)
+    output = issue_output(manager, args, create=True, language=language)
     manager.log_event(
         "create-issue",
         started_at=started_at,
@@ -2287,14 +2511,34 @@ def cmd_setup(args: argparse.Namespace) -> int:
     return cmd_init(args)
 
 
+def cmd_set_language(args: argparse.Namespace) -> int:
+    manager = make_manager(args)
+    language = normalize_language(args.language)
+    manager.save_sidecar_config(preferredLanguage=language)
+    print(
+        json.dumps(
+            {
+                "projectId": manager.project_id,
+                "preferredLanguage": language,
+                "configPath": str(manager.config_path),
+                "repoMutated": False,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Context handoff sidecar manager")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    def add_common(subparser: argparse.ArgumentParser) -> None:
+    def add_common(subparser: argparse.ArgumentParser, *, require_language: bool = False) -> None:
         subparser.add_argument("--worktree", help="Target worktree path. Defaults to current directory.")
         subparser.add_argument("--project-id", help="Override sidecar projectId for multi-worktree projects.")
         subparser.add_argument("--base-branch", help="Override and persist the feature base branch for this sidecar project.")
+        subparser.add_argument("--language", choices=sorted(SUPPORTED_LANGUAGES), required=require_language, help="Human-facing output language.")
 
     def add_task_update_args(subparser: argparse.ArgumentParser) -> None:
         subparser.add_argument("--task-id")
@@ -2422,6 +2666,10 @@ def build_parser() -> argparse.ArgumentParser:
     disable_issue_parser = subparsers.add_parser("disable-dogfood-issue-mode", help="Return dogfood issue handling to draft-only mode")
     add_common(disable_issue_parser)
     disable_issue_parser.set_defaults(func=cmd_disable_dogfood_issue_mode)
+
+    set_language_parser = subparsers.add_parser("set-language", help="Persist the human-facing output language in local sidecar config")
+    add_common(set_language_parser, require_language=True)
+    set_language_parser.set_defaults(func=cmd_set_language)
 
     doctor_parser = subparsers.add_parser("doctor", help="Report environment readiness without changing global state")
     add_common(doctor_parser)
