@@ -2,7 +2,7 @@
 
 [中文](./README.zh-CN.md) | English
 
-`context-handoff` is a self-contained Codex skill for AI-assisted feature lifecycle state. It helps agents resume work across branches, worktrees, and threads without repeatedly rebuilding the same project context.
+`context-handoff` is a self-contained local project context layer for Codex worktrees. It helps agents resume feature work, audit project hub state, and coordinate branches, worktrees, and threads without repeatedly rebuilding the same project context.
 
 The normal interface is conversation:
 
@@ -65,6 +65,10 @@ Use $context-handoff to audit this context before another agent takes over.
 ```
 
 ```text
+Use $context-handoff to audit this project hub across all worktrees.
+```
+
+```text
 Use $context-handoff to draft a dogfood issue for this problem.
 ```
 
@@ -107,14 +111,34 @@ Base branch can be overridden with `--base-branch dev`; the value is persisted i
 - `resume-feature`: Recover compact context, stale detection, and a `startThreadSummary`.
 - `handoff`: Save incomplete work, next step, facts, inferences, unknowns, validation, and safety rules.
 - `audit-context`: Report missing handoff, stale git state, missing validation, missing safety rules, dirty worktree, and backfill prompts.
+- `audit-project`: Audit all Git worktrees for a project hub inventory, compare real worktrees with sidecar active tasks, and generate branch-level backfill prompts.
 - `finish-feature`: Archive the task and generate PR title/body; create a PR only when explicitly requested and GitHub CLI is ready.
-- `project-status`: Summarize current project state for a project hub thread.
+- `project-status`: Summarize compact sidecar project state. It is not the full Git worktree inventory.
 - `weekly-report`: Write a human-facing Markdown report under the sidecar `reports/` directory.
 - `draft-issue`: Generate a dogfood/debug issue draft without requiring GitHub CLI.
 - `create-issue`: Create a dogfood/debug issue only when explicitly requested, safe, authenticated, and not likely duplicated.
 - `enable-dogfood-issue-mode` / `disable-dogfood-issue-mode`: Persist local sidecar permission for dogfood issue creation.
+- `snapshot`: Print current worktree Git facts for lightweight backfill.
 
 V1 `worktree-intake` and `worktree-handoff` have been merged into the unified `context-handoff` skill as `resume-feature` and `handoff`.
+
+## Project Hub Inventory
+
+`project-status` reports sidecar-known active tasks. It does not enumerate every Git worktree. For project hub threads or multi-worktree status, use:
+
+```text
+Use $context-handoff to audit this project hub across all worktrees. Project id: my_project. Base branch: dev.
+```
+
+The skill runs `audit-project`, which uses `git worktree list --porcelain`, audits every worktree, and returns:
+
+- Total Git worktrees versus sidecar active tasks.
+- Tracked and untracked worktrees.
+- Dirty, stale, missing handoff, missing validation, and missing safety-rule worktrees.
+- Sidecar tasks whose recorded worktree no longer exists.
+- Backfill prompts grouped by branch/worktree.
+
+If a requested project id is normalized, such as `paus_robot_lab_host` becoming `paus-robot-lab-host`, the output reports that canonicalization explicitly.
 
 ## Trustworthy Handoffs
 

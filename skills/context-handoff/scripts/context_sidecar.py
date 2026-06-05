@@ -322,6 +322,40 @@ def parse_git_status_porcelain_z(repo_root: Path) -> tuple[list[str], list[str]]
     return summary, unique_nonempty(touched)
 
 
+def parse_git_worktree_list(repo_root: Path) -> tuple[list[dict[str, str]], str]:
+    rc, stdout, stderr = run_git(["worktree", "list", "--porcelain"], repo_root)
+    if rc != 0:
+        return [], stderr or stdout or "git worktree list failed"
+
+    worktrees: list[dict[str, str]] = []
+    current: dict[str, str] = {}
+    for raw_line in stdout.splitlines():
+        line = raw_line.strip()
+        if not line:
+            if current:
+                worktrees.append(current)
+                current = {}
+            continue
+        if line.startswith("worktree "):
+            if current:
+                worktrees.append(current)
+            current = {"path": line.removeprefix("worktree ").strip()}
+        elif line.startswith("HEAD "):
+            current["headSha"] = line.removeprefix("HEAD ").strip()
+        elif line.startswith("branch "):
+            ref = line.removeprefix("branch ").strip()
+            current["branch"] = ref.removeprefix("refs/heads/")
+        elif line == "bare":
+            current["bare"] = "true"
+        elif line == "detached":
+            current["detached"] = "true"
+        elif line == "prunable":
+            current["prunable"] = "true"
+    if current:
+        worktrees.append(current)
+    return worktrees, ""
+
+
 def fingerprint_dirty_files(status_lines: list[str]) -> str:
     if not status_lines:
         return ""
@@ -1701,10 +1735,8 @@ def cmd_resume_feature(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_audit_context(args: argparse.Namespace) -> int:
-    started_at = time.perf_counter()
-    manager = make_manager(args)
-    payload = manager.load_active_tasks()
+def audit_context_payload(manager: SidecarManager, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = payload or manager.load_active_tasks()
     task, conflicts = manager.find_task(payload)
     sidecar_hit = task is not None
     if task is None:
@@ -1752,10 +1784,11 @@ def cmd_audit_context(args: argparse.Namespace) -> int:
     if not task.get("unknowns"):
         backfill_prompts.append("Name unknowns explicitly instead of filling missing context with guesses.")
 
-    output = {
+    return {
         "projectId": manager.project_id,
         "projectIdSource": manager.project_id_source,
         "taskId": task.get("taskId", ""),
+        "task": task,
         "sidecarRoot": str(manager.sidecar_root),
         "handoffPath": str(handoff_path),
         "checks": {
@@ -1770,14 +1803,194 @@ def cmd_audit_context(args: argparse.Namespace) -> int:
         "backfillPrompts": unique_nonempty(backfill_prompts),
         "conflicts": conflicts,
     }
+
+
+def cmd_audit_context(args: argparse.Namespace) -> int:
+    started_at = time.perf_counter()
+    manager = make_manager(args)
+    payload = manager.load_active_tasks()
+    output = audit_context_payload(manager, payload)
+    task = output["task"]
+    output.pop("task", None)
     manager.log_event(
         "audit-context",
         task_id=task.get("taskId", ""),
         started_at=started_at,
-        sidecar_hit=sidecar_hit,
-        handoff_available=handoff_available,
-        stale=stale["isStale"],
-        findingCount=len(findings),
+        sidecar_hit=output["checks"]["sidecarHit"],
+        handoff_available=output["checks"]["handoffAvailable"],
+        stale=output["checks"]["stale"]["isStale"],
+        findingCount=len(output["findings"]),
+    )
+    print(json.dumps(output, ensure_ascii=False, indent=2))
+    return 0
+
+
+def project_id_canonicalization(args: argparse.Namespace, manager: SidecarManager) -> dict[str, Any]:
+    requested = (getattr(args, "project_id", "") or os.environ.get("CONTEXT_HANDOFF_PROJECT_ID", "") or "").strip()
+    canonical = manager.project_id
+    return {
+        "requested": requested,
+        "canonical": canonical,
+        "changed": bool(requested and requested != canonical),
+    }
+
+
+def worktree_audit_row(worktree_info: dict[str, str], audit: dict[str, Any], manager: SidecarManager) -> dict[str, Any]:
+    task = audit.get("task") or {}
+    checks = audit.get("checks") or {}
+    stale = checks.get("stale") or {}
+    path = worktree_info.get("path") or str(manager.git.worktree_path)
+    branch = worktree_info.get("branch") or manager.git.branch
+    sidecar_hit = bool(checks.get("sidecarHit"))
+    return {
+        "branch": branch,
+        "worktreePath": path,
+        "headSha": manager.git.head_sha or worktree_info.get("headSha", ""),
+        "dirty": bool(checks.get("dirtyWorktree")),
+        "dirtyFiles": manager.git.dirty_files,
+        "sidecarHit": sidecar_hit,
+        "taskId": task.get("taskId", ""),
+        "taskStatus": task.get("status", ""),
+        "handoffAvailable": bool(checks.get("handoffAvailable")),
+        "validationPresent": bool(checks.get("validationPresent")),
+        "safetyRulesPresent": bool(checks.get("safetyRulesPresent")),
+        "stale": bool(stale.get("isStale")),
+        "staleReasons": stale.get("reasons", []),
+        "nextStep": task.get("nextStep", ""),
+        "blocker": task.get("blocker", ""),
+        "findings": audit.get("findings", []),
+        "backfillPrompts": audit.get("backfillPrompts", []),
+        "conflicts": audit.get("conflicts", []),
+    }
+
+
+def cmd_audit_project(args: argparse.Namespace) -> int:
+    started_at = time.perf_counter()
+    manager = make_manager(args)
+    payload = manager.load_active_tasks()
+    tasks = payload.get("tasks", [])
+    state = manager.write_project_state(tasks)
+    worktrees, worktree_error = parse_git_worktree_list(manager.git.repo_root)
+
+    rows: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    for item in worktrees:
+        path = item.get("path", "")
+        if not path:
+            continue
+        try:
+            wt_manager = SidecarManager(
+                Path(path),
+                project_id_override=getattr(args, "project_id", "") or manager.project_id,
+                base_branch_override=getattr(args, "base_branch", "") or manager.git.base_branch,
+            )
+            audit = audit_context_payload(wt_manager, payload)
+            rows.append(worktree_audit_row(item, audit, wt_manager))
+        except Exception as exc:  # Keep hub inventory resilient across broken worktrees.
+            errors.append({"worktreePath": path, "error": short_text(str(exc), max_len=500)})
+
+    worktree_paths = {str(Path(row["worktreePath"]).resolve()) for row in rows if row.get("worktreePath")}
+    active_tasks = [task for task in tasks if task.get("status", "active") in VALID_STATUSES]
+    active_without_worktree = []
+    for task in active_tasks:
+        raw_path = str(task.get("worktreePath") or "")
+        resolved = str(Path(raw_path).resolve()) if raw_path else ""
+        if not raw_path or resolved not in worktree_paths:
+            active_without_worktree.append(
+                {
+                    "taskId": task.get("taskId", ""),
+                    "branch": task.get("branch", ""),
+                    "worktreePath": raw_path,
+                    "status": task.get("status", ""),
+                    "updatedAt": task.get("updatedAt", ""),
+                }
+            )
+
+    untracked = [
+        {
+            "branch": row.get("branch", ""),
+            "worktreePath": row.get("worktreePath", ""),
+            "headSha": row.get("headSha", ""),
+            "dirty": row.get("dirty", False),
+            "backfillPrompts": row.get("backfillPrompts", []),
+        }
+        for row in rows
+        if not row.get("sidecarHit")
+    ]
+    branches_needing_backfill = unique_nonempty(
+        [
+            row.get("branch", "")
+            for row in rows
+            if (not row.get("sidecarHit"))
+            or (not row.get("handoffAvailable"))
+            or (not row.get("validationPresent"))
+            or (not row.get("safetyRulesPresent"))
+            or row.get("stale")
+        ]
+    )
+    backfill_by_branch = {
+        row.get("branch") or row.get("worktreePath"): row.get("backfillPrompts", [])
+        for row in rows
+        if row.get("backfillPrompts")
+    }
+    missing_handoff = sum(1 for row in rows if not row.get("handoffAvailable"))
+    missing_validation = sum(1 for row in rows if not row.get("validationPresent"))
+    missing_safety = sum(1 for row in rows if not row.get("safetyRulesPresent"))
+    summary_counts = {
+        "gitWorktrees": len(worktrees),
+        "sidecarActiveTasks": len(active_tasks),
+        "trackedWorktrees": sum(1 for row in rows if row.get("sidecarHit")),
+        "untrackedWorktrees": len(untracked),
+        "dirtyWorktrees": sum(1 for row in rows if row.get("dirty")),
+        "staleTasks": sum(1 for row in rows if row.get("stale")),
+        "missingHandoff": missing_handoff,
+        "missingValidation": missing_validation,
+        "missingSafetyRules": missing_safety,
+        "activeTasksWithoutWorktree": len(active_without_worktree),
+        "worktreeAuditErrors": len(errors),
+    }
+
+    output = {
+        "projectId": manager.project_id,
+        "projectIdSource": manager.project_id_source,
+        "projectIdCanonicalization": project_id_canonicalization(args, manager),
+        "sidecarRoot": str(manager.sidecar_root),
+        "projectStatePath": str(manager.project_state_path),
+        "canonicalWorktree": str(manager.git.worktree_path),
+        "canonicalRepoRoot": str(manager.git.repo_root),
+        "baseBranch": manager.git.base_branch,
+        "summaryCounts": summary_counts,
+        "worktrees": rows,
+        "untrackedWorktrees": untracked,
+        "activeTasksWithoutWorktree": active_without_worktree,
+        "branchesNeedingBackfill": branches_needing_backfill,
+        "backfillPromptsByBranch": backfill_by_branch,
+        "projectStatus": {
+            "activeTaskCount": state.get("activeTaskCount", 0),
+            "activeTasks": state.get("activeTasks", []),
+        },
+        "warnings": [],
+        "errors": errors,
+    }
+    if worktree_error:
+        output["errors"].append({"worktreePath": str(manager.git.repo_root), "error": short_text(worktree_error, max_len=500)})
+    if summary_counts["gitWorktrees"] != summary_counts["sidecarActiveTasks"]:
+        output["warnings"].append("Git worktree count differs from sidecar active task count; project-status is not a full worktree inventory.")
+    if output["projectIdCanonicalization"]["changed"]:
+        output["warnings"].append(
+            f"Project id was canonicalized from {output['projectIdCanonicalization']['requested']} to {output['projectIdCanonicalization']['canonical']}."
+        )
+
+    manager.log_event(
+        "audit-project",
+        started_at=started_at,
+        sidecar_hit=True,
+        handoff_available=None,
+        scan_scope="git-worktree-inventory",
+        gitWorktrees=summary_counts["gitWorktrees"],
+        sidecarActiveTasks=summary_counts["sidecarActiveTasks"],
+        untrackedWorktrees=summary_counts["untrackedWorktrees"],
+        staleTasks=summary_counts["staleTasks"],
     )
     print(json.dumps(output, ensure_ascii=False, indent=2))
     return 0
@@ -2140,6 +2353,10 @@ def build_parser() -> argparse.ArgumentParser:
     audit_parser = subparsers.add_parser("audit-context", help="Audit current sidecar context for staleness and missing trust fields")
     add_common(audit_parser)
     audit_parser.set_defaults(func=cmd_audit_context)
+
+    audit_project_parser = subparsers.add_parser("audit-project", help="Audit all git worktrees for project hub inventory")
+    add_common(audit_project_parser)
+    audit_project_parser.set_defaults(func=cmd_audit_project)
 
     handoff_parser = subparsers.add_parser("handoff", help="Update the current task and write the latest handoff")
     add_common(handoff_parser)
