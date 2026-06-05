@@ -19,6 +19,7 @@ skill 自带 Python sidecar CLI，位于 `skills/context-handoff/scripts/`。用
 - 多 worktree 项目被拆成多个不相关的本地 projectId。
 - handoff、完成归档、audit、周报输出不一致。
 - project hub thread 把 sidecar 已登记任务误当成完整 worktree 全貌。
+- agent 对什么时候开 hub、execution thread、side chat、subagent 或 worktree 给出不稳定建议。
 - 动态 agent 状态误写进目标仓库文档或 feature PR。
 
 ## 安装
@@ -75,6 +76,74 @@ Use $context-handoff to draft a dogfood issue for this problem.
 
 ```text
 Use $context-handoff to finish this feature and generate PR text.
+```
+
+## 多 Thread Workflow Playbook
+
+V2.5 把不同 thread 固化为 workflow 角色，把 sidecar 作为它们之间的共享状态层。这只是文档和 agent 指南：不新增 CLI action，不改变 sidecar schema，也不要求 UI/MCP 支持。
+
+默认拓扑：
+
+- 一个项目默认一个 Project Hub Thread，负责项目全局状态、任务路由、worktree inventory，以及周期性的 `audit-project` / `weekly-report` 汇总。
+- 一个 active worktree/task 默认一个 Primary Execution Thread，负责实现、验证、handoff、finish/archive 和 PR 文案。
+- 当任务需要隔离 branch、并行实现或不同 base 时，创建新 worktree；继续同一任务或很小的一次性草稿时，复用当前 worktree。
+- 模糊但确定会落到某个 repo/worktree 的 task，可以直接开 execution thread，在里面先 plan 再实现。
+- 模糊且产品方向不确定的 task，留在 hub 或开短期 Discussion Thread，直到它变成可执行任务。
+- Side chat 用于短问题、草稿措辞、一次性推敲；只把稳定决策复制回 hub 或 execution thread。
+- Subagent 用于临时 review、调查、对比或验证；它只回传 findings，不作为长期 task owner。
+- Explainer Thread 用于深入项目讲解或 onboarding，避免把 hub 变成长教程。
+- Dogfood/QA Thread 用于真实项目测试反馈、复现信息和 issue draft。
+- `sidecar`、`handoff` 和 `audit-project` 是这些 thread 之间的共享状态层。
+
+路由建议：
+
+- 用户问“整个项目现在到哪了”、需要所有 worktree 或任务路由时，用或创建 Project Hub Thread。
+- 用户要 build、fix、refactor、validate 或 finish 某个 branch/worktree task 时，用或创建 Primary Execution Thread。
+- 只有隔离、并行工作或独立 branch/base 有价值时，才建议新 worktree；否则继续当前 worktree。
+- task 还模糊但明显属于某个 repo/worktree 时，直接开 execution thread，并先在里面 plan。
+- task 仍在讨论产品方向、优先级或是否值得做时，留在 hub 或 Discussion Thread。
+- 小问题且不需要长期记忆时，用 side chat。
+- 需要独立 review、调查或验证时，用 subagent，并给它窄问题和只返回 findings 的要求。
+- 需要讲清架构、历史或 onboarding 时，用 Explainer Thread。
+- dogfood/QA 反馈用 Dogfood/QA Thread；默认优先 `draft-issue`，除非用户明确要求创建 issue。
+
+状态规则：
+
+- Hub 负责地图、inventory、路由决策和紧凑摘要，不负责每个实现细节。
+- Execution thread 按需用 `start-feature`、`resume-feature`、`handoff`、`audit-context` 和 `finish-feature` 更新 sidecar。
+- Discussion、side chat、explainer、dogfood 和 subagent 的结果，只有复制进 hub、相关 execution thread 或 sidecar handoff/audit 输出后才算持久状态。
+- 不要把 `project-status` 当成完整项目 inventory；hub 级状态必须用 `audit-project`。
+
+推荐 prompt templates：
+
+新 execution thread：
+
+```text
+You are the Primary Execution Thread for <project>/<task>. Repo/worktree: <path>. Use $context-handoff first: run resume-feature if a task already exists, otherwise start-feature with this goal: <goal>. Plan briefly inside this thread, then implement. Keep dynamic state in sidecar/handoffs, not tracked repo docs. Before stopping, run the relevant validation, audit-context if useful, and save a handoff with facts, inferences, unknowns, safety rules, validation, blockers, and next step.
+```
+
+Execution thread completion handoff：
+
+```text
+Task complete for <project>/<task>. Please update $context-handoff: run audit-context, then finish-feature or handoff as appropriate. Report back to the Project Hub with: branch, worktree, summary of changes, validation commands/results, PR URL or generated PR title/body, remaining risks, sidecar handoff/archive path, and whether the worktree is clean.
+```
+
+Dogfood feedback：
+
+```text
+This is a Dogfood/QA Thread for <project>. Feedback: <observed behavior>. Expected: <expected behavior>. Repo/worktree if known: <path>. Use $context-handoff to draft a dogfood issue. Keep Facts, Inferences, Unknowns, Reproduction, Suggested Fix, and Priority separate. Do not create a GitHub issue unless I explicitly ask or dogfood issue mode is enabled.
+```
+
+Project hub migration：
+
+```text
+You are the Project Hub Thread for <project>. Canonical repo/worktree: <path>. Use $context-handoff to run audit-project with the expected project id/base branch. Build the hub view from real git worktrees plus sidecar active tasks. Summarize active execution threads, missing sidecar coverage, stale handoffs, validation gaps, and concrete backfill prompts. Do not treat project-status as the full inventory.
+```
+
+Explainer thread：
+
+```text
+You are an Explainer Thread for <project>. Repo/worktree: <path>. Explain <topic> for onboarding. Use stable repo docs and current code. Keep the hub clean: produce a concise explanation, glossary, key files, and open questions, then tell the hub only the durable takeaways or docs that should be updated.
 ```
 
 ## 人类可读输出本地化
