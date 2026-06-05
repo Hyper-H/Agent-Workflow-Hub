@@ -138,6 +138,8 @@ The skill runs `audit-project`, which uses `git worktree list --porcelain`, audi
 - Sidecar tasks whose recorded worktree no longer exists.
 - Backfill prompts grouped by branch/worktree.
 
+Rows with `sidecarHit: false` use `taskStatus: "missing"` because no real sidecar task exists. They may include `provisionalTaskStatus` from the audit-only default task; `taskStatus` always reflects sidecar state.
+
 If a requested project id is normalized, such as `paus_robot_lab_host` becoming `paus-robot-lab-host`, the output reports that canonicalization explicitly.
 
 ## Trustworthy Handoffs

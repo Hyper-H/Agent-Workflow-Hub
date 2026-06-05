@@ -74,6 +74,8 @@ When the user asks for project hub status, whole-project status, all worktrees, 
 5. Group concrete backfill prompts by branch/worktree.
 6. If a requested project id is canonicalized, say so once, for example `paus_robot_lab_host` -> `paus-robot-lab-host`.
 
+Rows with `sidecarHit: false` mean no real sidecar task exists. In `audit-project`, report these rows as `taskStatus: missing`; any `provisionalTaskStatus` is audit-only fallback context and must not be described as sidecar state.
+
 Never infer that sidecar active tasks are the full worktree inventory.
 
 ## Backfill Guidance

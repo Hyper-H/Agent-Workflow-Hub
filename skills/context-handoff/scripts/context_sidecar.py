@@ -1842,7 +1842,7 @@ def worktree_audit_row(worktree_info: dict[str, str], audit: dict[str, Any], man
     path = worktree_info.get("path") or str(manager.git.worktree_path)
     branch = worktree_info.get("branch") or manager.git.branch
     sidecar_hit = bool(checks.get("sidecarHit"))
-    return {
+    row: dict[str, Any] = {
         "branch": branch,
         "worktreePath": path,
         "headSha": manager.git.head_sha or worktree_info.get("headSha", ""),
@@ -1850,7 +1850,7 @@ def worktree_audit_row(worktree_info: dict[str, str], audit: dict[str, Any], man
         "dirtyFiles": manager.git.dirty_files,
         "sidecarHit": sidecar_hit,
         "taskId": task.get("taskId", ""),
-        "taskStatus": task.get("status", ""),
+        "taskStatus": task.get("status", "") if sidecar_hit else "missing",
         "handoffAvailable": bool(checks.get("handoffAvailable")),
         "validationPresent": bool(checks.get("validationPresent")),
         "safetyRulesPresent": bool(checks.get("safetyRulesPresent")),
@@ -1862,6 +1862,9 @@ def worktree_audit_row(worktree_info: dict[str, str], audit: dict[str, Any], man
         "backfillPrompts": audit.get("backfillPrompts", []),
         "conflicts": audit.get("conflicts", []),
     }
+    if not sidecar_hit:
+        row["provisionalTaskStatus"] = task.get("status", "")
+    return row
 
 
 def cmd_audit_project(args: argparse.Namespace) -> int:
@@ -1912,6 +1915,9 @@ def cmd_audit_project(args: argparse.Namespace) -> int:
             "worktreePath": row.get("worktreePath", ""),
             "headSha": row.get("headSha", ""),
             "dirty": row.get("dirty", False),
+            "sidecarHit": False,
+            "taskStatus": "missing",
+            "provisionalTaskStatus": row.get("provisionalTaskStatus", ""),
             "backfillPrompts": row.get("backfillPrompts", []),
         }
         for row in rows
