@@ -48,13 +48,82 @@ Use $context-handoff to generate this week's report in Chinese.
 Use $context-handoff to save a handoff in Chinese.
 ```
 
+## Multi-Thread Workflow Playbook
+
+Use this playbook when the user asks whether to open a new thread, worktree, subagent, side chat, or project hub. The goal is stable routing, not new infrastructure. Do not add CLI actions, change sidecar schema, or require UI/MCP support for these workflows.
+
+Default topology:
+
+- One project has one Project Hub Thread. It owns the project map, whole-project status, worktree inventory, routing decisions, and periodic `audit-project` / `weekly-report` summaries.
+- One active worktree/task has one Primary Execution Thread. It owns implementation, local planning, validation, handoff, finish/archive, and PR text for that task.
+- Create a new worktree when the task needs an isolated branch, parallel implementation, or a different base. Reuse the existing worktree when continuing the same task or doing tiny scratch work that will not become durable.
+- A repo-bound but still fuzzy task can start directly in a Primary Execution Thread. Plan inside that thread first, then implement once the task is shaped.
+- A fuzzy product-direction task stays in the Project Hub Thread or a short-lived Discussion Thread until it becomes repo-bound and actionable.
+- Side chats are for short questions, scratch wording, or throwaway drafts. They should not become the canonical project memory.
+- Subagents are temporary helpers for review, investigation, comparison, or validation. They should report findings back to the primary or hub thread and should not become long-term task owners.
+- Explainer Threads are for deep project explanation or onboarding. Use them to avoid turning the hub into a long tutorial.
+- Dogfood/QA Threads are for real-project testing feedback, reproduction notes, and issue drafts.
+- `sidecar`, `handoff`, and `audit-project` are the shared state layer between these threads. Thread conversation is useful, but sidecar state is the durable coordination point.
+
+Routing rules:
+
+- If the user asks "where are we across the project?", stay in or create the Project Hub Thread and run `audit-project`.
+- If the user asks to build, fix, refactor, validate, or finish one branch/worktree task, use a Primary Execution Thread and run `resume-feature` or `start-feature`.
+- If the user asks whether to open a worktree, recommend one only when isolation, parallel work, or a separate branch/base is useful; otherwise continue in the current worktree.
+- If the user has a task but the exact implementation path is fuzzy and it clearly belongs to one repo/worktree, create the execution thread anyway and start with planning in that thread.
+- If the user is still deciding product direction, user value, priority, or whether the task should exist, keep it in the hub or create a Discussion Thread.
+- If the question is small and does not need durable project memory, use a side chat and copy only final decisions back to the hub or execution thread when needed.
+- If independent review, targeted research, or validation would help, launch a subagent with a narrow question and an explicit "return findings only" instruction.
+- If the user wants a deep explanation of architecture, history, or onboarding, create an Explainer Thread and point it at stable docs plus the current repo.
+- If feedback comes from dogfooding or QA, use a Dogfood/QA Thread and prefer `draft-issue` unless the user explicitly asks to create an issue or dogfood issue mode is enabled.
+
+State handoff rules:
+
+- The Project Hub Thread should not own every implementation detail. It should keep the map, inventory, routing decisions, and links or summaries from execution threads.
+- The Primary Execution Thread must update sidecar state with `start-feature`, `resume-feature`, `handoff`, `audit-context`, and `finish-feature` as appropriate.
+- Completion summaries from execution threads should include what changed, validation, unresolved risks, PR status, and the sidecar handoff/archive path when available.
+- Discussion, side chat, explainer, dogfood, and subagent results become durable only after their useful decisions or facts are copied into the hub, the relevant execution thread, or sidecar handoff/audit output.
+- Never treat `project-status` as the whole-project inventory; use `audit-project` for hub-level status.
+
+Recommended prompt templates:
+
+New execution thread prompt:
+
+```text
+You are the Primary Execution Thread for <project>/<task>. Repo/worktree: <path>. Use $context-handoff first: run resume-feature if a task already exists, otherwise start-feature with this goal: <goal>. Plan briefly inside this thread, then implement. Keep dynamic state in sidecar/handoffs, not tracked repo docs. Before stopping, run the relevant validation, audit-context if useful, and save a handoff with facts, inferences, unknowns, safety rules, validation, blockers, and next step.
+```
+
+Execution thread completion handoff:
+
+```text
+Task complete for <project>/<task>. Please update $context-handoff: run audit-context, then finish-feature or handoff as appropriate. Report back to the Project Hub with: branch, worktree, summary of changes, validation commands/results, PR URL or generated PR title/body, remaining risks, sidecar handoff/archive path, and whether the worktree is clean.
+```
+
+Dogfood feedback prompt:
+
+```text
+This is a Dogfood/QA Thread for <project>. Feedback: <observed behavior>. Expected: <expected behavior>. Repo/worktree if known: <path>. Use $context-handoff to draft a dogfood issue. Keep Facts, Inferences, Unknowns, Reproduction, Suggested Fix, and Priority separate. Do not create a GitHub issue unless I explicitly ask or dogfood issue mode is enabled.
+```
+
+Project hub migration prompt:
+
+```text
+You are the Project Hub Thread for <project>. Canonical repo/worktree: <path>. Use $context-handoff to run audit-project with the expected project id/base branch. Build the hub view from real git worktrees plus sidecar active tasks. Summarize active execution threads, missing sidecar coverage, stale handoffs, validation gaps, and concrete backfill prompts. Do not treat project-status as the full inventory.
+```
+
+Explainer thread prompt:
+
+```text
+You are an Explainer Thread for <project>. Repo/worktree: <path>. Explain <topic> for onboarding. Use stable repo docs and current code. Keep the hub clean: produce a concise explanation, glossary, key files, and open questions, then tell the hub only the durable takeaways or docs that should be updated.
+```
+
 ## Actions
 
 - `start-feature`: Create or update the active task for the current branch/worktree. Use when the user starts a new feature or says what this branch is for.
 - `resume-feature`: Recover compact task state, latest handoff availability, stable docs, git status, and next-step hints. Use when taking over or continuing a branch.
 - `handoff`: Save incomplete work, next step, blockers, touched areas, facts, inferences, unknowns, validation commands/results/time, safety rules, and a concise thread summary.
 - `audit-context`: Check whether the current context is trustworthy before handoff/resume. It reports missing handoff, stale HEAD/dirty files, missing validation, missing safety rules, dirty worktree, and backfill prompts.
-- `audit-project`: Project hub inventory for all Git worktrees. It compares real `git worktree list` output with sidecar active tasks, audits every worktree, and reports untracked worktrees, stale tasks, missing validation/safety/handoff, and backfill prompts.
+- `audit-project`: Project hub inventory for all Git worktrees. It compares real `git worktree list` output with sidecar active tasks, audits every worktree, and reports untracked worktrees, stale tasks, missing validation/safety/handoff, recommended actions, execution-thread prompts, and cleanup prompts.
 - `finish-feature`: Finish and archive the active task. Create a PR only if the user explicitly asks and GitHub CLI is already installed and authenticated.
 - `project-status`: Return compact sidecar project state for planning. This is not the full Git worktree inventory.
 - `weekly-report`: Generate a human-facing Markdown report under the sidecar `reports/` directory and reply with a short notification, not the full report by default.
@@ -89,12 +158,16 @@ When the user asks for project hub status, whole-project status, all worktrees, 
 2. If `audit-project` is unavailable, fall back to `project-status`, `git -C <canonical-repo> worktree list --porcelain`, and per-worktree `audit-context`.
 3. Report a table with branch, worktree path, headSha, dirty/clean, sidecarHit, task status, handoffAvailable, validationPresent, safetyRulesPresent, stale, blocker, and nextStep.
 4. Explicitly report total Git worktrees, total sidecar active tasks, tracked versus untracked worktrees, dirty worktrees, stale worktrees, missing validation/safety/handoff, and active sidecar tasks whose worktree no longer exists.
-5. Group concrete backfill prompts by branch/worktree.
-6. If a requested project id is canonicalized, say so once, for example `paus_robot_lab_host` -> `paus-robot-lab-host`.
+5. Group concrete backfill prompts and `threadPromptsByBranch` by branch/worktree.
+6. Include `recommendedActions` for untracked worktrees, stale tasks, missing validation/safety/handoff, and dirty worktrees. Each action should include both `oldThreadBackfillPrompt` and `newExecutionThreadPrompt` because the CLI cannot know whether an old execution thread exists.
+7. Include `cleanupPrompts` for active sidecar tasks whose recorded worktree no longer exists. Ask the human to confirm merged/abandoned/moved state; never auto-delete worktrees.
+8. If a requested project id is canonicalized, say so once, for example `paus_robot_lab_host` -> `paus-robot-lab-host`.
 
 Rows with `sidecarHit: false` mean no real sidecar task exists. In `audit-project`, report these rows as `taskStatus: missing`; any `provisionalTaskStatus` is audit-only fallback context and must not be described as sidecar state.
 
 Never infer that sidecar active tasks are the full worktree inventory.
+
+Prefer old execution threads for backfill when they exist, because they may still have semantic context that Git cannot recover. If no old execution thread exists, use `newExecutionThreadPrompt` to open a new Primary Execution Thread. The new thread must recover or initialize sidecar state, distinguish facts/inferences/unknowns, add validation/safety/nextStep, save a handoff, and report back to the Project Hub. The prompt should not micromanage the agent's investigation path: the agent may use code reading, commits, PRs, issues, tests, or targeted search as needed.
 
 ## Backfill Guidance
 
@@ -107,6 +180,8 @@ For a useful first sidecar state, combine:
 - Existing PR descriptions, issue text, or release notes when available.
 
 If semantic context is missing, write a provisional task state and say what is missing rather than pretending the git history is enough.
+
+`touchedFiles` means current Git dirty/touched files. It is a locator signal when context is thin, not an instruction to inspect those files first. Agents should choose their own investigation strategy and avoid full scans unless necessary.
 
 Handoffs must distinguish:
 
@@ -132,7 +207,7 @@ For single feature actions, return a short conversational summary:
 - Handoff or report path when a file was written.
 - PR URL when known, or generated PR title/body guidance when GitHub CLI is unavailable.
 
-For project hub actions, do not only return a short current-task summary. Always include compact inventory counts, a table of worktrees, and grouped backfill prompts. Avoid pasting long sidecar JSON or full weekly reports unless the user asks for detail.
+For project hub actions, do not only return a short current-task summary. Always include compact inventory counts, a table of worktrees, grouped backfill prompts, recommended actions, execution-thread prompts, and cleanup prompts. Avoid pasting long sidecar JSON or full weekly reports unless the user asks for detail.
 
 ## Advanced / Legacy Actions
 

@@ -136,6 +136,42 @@ TEXT = {
         "no": "no",
         "weekly_ready": "Weekly context report is ready: {path}",
         "issue_draft_guidance": "Draft only by default. Ask to create issue or enable dogfood issue mode to allow creation.",
+        "action_reason_missing_task": "sidecar task missing",
+        "action_reason_stale": "task snapshot is stale",
+        "action_reason_missing_handoff": "handoff missing",
+        "action_reason_missing_validation": "validation missing",
+        "action_reason_missing_safety": "safety rules missing",
+        "action_reason_dirty_worktree": "worktree has uncommitted changes",
+        "cleanup_reason_missing_worktree": "active sidecar task points to a missing worktree",
+        "hub_receipt_expected": "Report back to the Project Hub with: taskId, status, handoffPath, nextStep, blocker, validation, risks.",
+        "old_thread_backfill_prompt": (
+            "You are the existing Primary Execution Thread for project {project_id}, branch {branch}. "
+            "Repo/worktree: {worktree_path}. Use $context-handoff first: run resume-feature and audit-context for this worktree. "
+            "If no sidecar task exists, create a provisional task with start-feature. "
+            "Backfill or refresh sidecar state and handoff because audit-project reported: {reasons}. "
+            "Use your own investigation strategy; do not full-scan unless necessary. "
+            "Use sidecar/handoff/git facts/touchedFiles/recent commits/PR/issue/targeted search as evidence as needed; touchedFiles means current Git dirty/touched files and is only one locator signal. "
+            "Before stopping, update facts, inferences, unknowns, safety rules, validation, nextStep, blockers/risks, save a handoff, and report back to the hub."
+        ),
+        "new_thread_execution_prompt": (
+            "You are a new Primary Execution Thread for project {project_id}, branch {branch}. "
+            "Repo/worktree: {worktree_path}. Use $context-handoff first: run resume-feature if a task already exists, otherwise start-feature with a provisional goal from the branch/worktree. "
+            "Then run audit-context and do the minimum useful intake needed to make the context trustworthy because audit-project reported: {reasons}. "
+            "Use your own investigation strategy; do not full-scan unless necessary. "
+            "Use sidecar/handoff/git facts/touchedFiles/recent commits/PR/issue/targeted search as evidence as needed; touchedFiles means current Git dirty/touched files and is only one locator signal. "
+            "Before stopping, distinguish facts/inferences/unknowns, add validation and safety rules, set nextStep and blocker/risks, save a handoff, and report back to the hub."
+        ),
+        "stale_refresh_prompt": (
+            "This task appears stale. In the execution thread for project {project_id}, branch {branch}, worktree {worktree_path}, use $context-handoff to run resume-feature and audit-context. "
+            "Verify current HEAD, dirty state, validation, and nextStep before trusting older handoff content. "
+            "Refresh facts, inferences, unknowns, safety rules, validation, and handoff, then report back to the hub."
+        ),
+        "cleanup_prompt": (
+            "Project Hub cleanup request for project {project_id}: sidecar task {task_id} on branch {branch} points to a missing worktree: {worktree_path}. "
+            "Ask the human to confirm whether this task was merged, abandoned, moved, or still needs recovery. "
+            "If complete, use $context-handoff finish-feature or archive as appropriate; if abandoned, archive with a clear reason. "
+            "Do not automatically delete any worktree or repo files. Report the archived/finished state back to the hub."
+        ),
     },
     "zh-CN": {
         "none": "无",
@@ -230,6 +266,48 @@ TEXT = {
         "issue_draft_guidance": "默认只生成 draft。用户要求创建 issue 或启用 dogfood issue mode 后才允许创建。",
     },
 }
+
+
+TEXT["zh-CN"].update(
+    {
+        "action_reason_missing_task": "sidecar task 缺失",
+        "action_reason_stale": "task 快照已过期",
+        "action_reason_missing_handoff": "handoff 缺失",
+        "action_reason_missing_validation": "validation 缺失",
+        "action_reason_missing_safety": "safety rules 缺失",
+        "action_reason_dirty_worktree": "worktree 存在未提交变更",
+        "cleanup_reason_missing_worktree": "active sidecar task 指向不存在的 worktree",
+        "hub_receipt_expected": "回执 Project Hub：taskId、status、handoffPath、nextStep、blocker、validation、risks。",
+        "old_thread_backfill_prompt": (
+            "你是项目 {project_id}、分支 {branch} 的旧 Primary Execution Thread。"
+            "Repo/worktree: {worktree_path}。先使用 $context-handoff：在这个 worktree 运行 resume-feature 和 audit-context。"
+            "如果没有 sidecar task，就用 start-feature 创建 provisional task。"
+            "audit-project 报告了这些问题，请补录或刷新 sidecar 状态和 handoff：{reasons}。"
+            "使用你自己的调查策略；除非必要，不要做全量扫描。"
+            "按需使用 sidecar/handoff/git facts/touchedFiles/recent commits/PR/issue/targeted search 作为证据；touchedFiles 表示当前 Git dirty/touched files，只是定位线索之一。"
+            "停止前更新 facts、inferences、unknowns、safety rules、validation、nextStep、blockers/risks，保存 handoff，并回执 hub。"
+        ),
+        "new_thread_execution_prompt": (
+            "你是项目 {project_id}、分支 {branch} 的新 Primary Execution Thread。"
+            "Repo/worktree: {worktree_path}。先使用 $context-handoff：如果已有 task 就运行 resume-feature，否则基于 branch/worktree 的 provisional goal 运行 start-feature。"
+            "然后运行 audit-context，并做最小必要 intake，让上下文变得可信；audit-project 报告了这些问题：{reasons}。"
+            "使用你自己的调查策略；除非必要，不要做全量扫描。"
+            "按需使用 sidecar/handoff/git facts/touchedFiles/recent commits/PR/issue/targeted search 作为证据；touchedFiles 表示当前 Git dirty/touched files，只是定位线索之一。"
+            "停止前区分 facts/inferences/unknowns，补 validation 和 safety rules，设置 nextStep 与 blocker/risks，保存 handoff，并回执 hub。"
+        ),
+        "stale_refresh_prompt": (
+            "这个 task 看起来已过期。请在项目 {project_id}、分支 {branch}、worktree {worktree_path} 的 execution thread 中使用 $context-handoff 运行 resume-feature 和 audit-context。"
+            "信任旧 handoff 前，核对当前 HEAD、dirty state、validation 和 nextStep。"
+            "刷新 facts、inferences、unknowns、safety rules、validation 和 handoff，然后回执 hub。"
+        ),
+        "cleanup_prompt": (
+            "Project Hub cleanup 请求：项目 {project_id} 的 sidecar task {task_id}（分支 {branch}）指向不存在的 worktree：{worktree_path}。"
+            "请让人类确认该任务是否已 merge、废弃、移动，或仍需恢复。"
+            "如果已完成，使用 $context-handoff finish-feature 或 archive；如果废弃，用清晰原因 archive。"
+            "不要自动删除任何 worktree 或 repo 文件。完成后把归档/完成状态回执 hub。"
+        ),
+    }
+)
 
 
 def now_iso() -> str:
@@ -2085,6 +2163,118 @@ def worktree_audit_row(worktree_info: dict[str, str], audit: dict[str, Any], man
     return row
 
 
+HUB_RECEIPT_FIELDS = ["taskId", "status", "handoffPath", "nextStep", "blocker", "validation", "risks"]
+
+
+def audit_row_action_reasons(row: dict[str, Any], language: str) -> list[str]:
+    reasons: list[str] = []
+    if not row.get("sidecarHit"):
+        reasons.append(tr(language, "action_reason_missing_task"))
+    if row.get("stale"):
+        reasons.append(tr(language, "action_reason_stale"))
+    if not row.get("handoffAvailable"):
+        reasons.append(tr(language, "action_reason_missing_handoff"))
+    if not row.get("validationPresent"):
+        reasons.append(tr(language, "action_reason_missing_validation"))
+    if not row.get("safetyRulesPresent"):
+        reasons.append(tr(language, "action_reason_missing_safety"))
+    if row.get("dirty"):
+        reasons.append(tr(language, "action_reason_dirty_worktree"))
+    return unique_nonempty(reasons)
+
+
+def recommended_action_type(row: dict[str, Any]) -> str:
+    if not row.get("sidecarHit"):
+        return "backfill-existing-or-new-thread"
+    if row.get("stale"):
+        return "refresh-stale-task"
+    return "backfill-existing-thread"
+
+
+def thread_prompt_key(row: dict[str, Any]) -> str:
+    return row.get("branch") or row.get("worktreePath") or row.get("taskId") or "unknown"
+
+
+def build_hub_action_prompts(
+    manager: SidecarManager,
+    rows: list[dict[str, Any]],
+    active_without_worktree: list[dict[str, Any]],
+    language: str,
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, str]], list[dict[str, Any]]]:
+    recommended_actions: list[dict[str, Any]] = []
+    thread_prompts_by_branch: dict[str, dict[str, str]] = {}
+    for row in rows:
+        reasons = audit_row_action_reasons(row, language)
+        if not reasons:
+            continue
+        branch = row.get("branch") or "unknown"
+        worktree_path = row.get("worktreePath") or ""
+        reason_text = "; ".join(reasons)
+        old_prompt = tr(
+            language,
+            "old_thread_backfill_prompt",
+            project_id=manager.project_id,
+            branch=branch,
+            worktree_path=worktree_path,
+            reasons=reason_text,
+        )
+        new_prompt = tr(
+            language,
+            "new_thread_execution_prompt",
+            project_id=manager.project_id,
+            branch=branch,
+            worktree_path=worktree_path,
+            reasons=reason_text,
+        )
+        action: dict[str, Any] = {
+            "branch": branch,
+            "worktreePath": worktree_path,
+            "taskId": row.get("taskId", ""),
+            "reason": reason_text,
+            "reasons": reasons,
+            "recommendedActionType": recommended_action_type(row),
+            "oldThreadBackfillPrompt": old_prompt,
+            "newExecutionThreadPrompt": new_prompt,
+            "hubReceiptExpected": HUB_RECEIPT_FIELDS,
+        }
+        if row.get("stale"):
+            action["staleRefreshPrompt"] = tr(
+                language,
+                "stale_refresh_prompt",
+                project_id=manager.project_id,
+                branch=branch,
+                worktree_path=worktree_path,
+            )
+        recommended_actions.append(action)
+        thread_prompts_by_branch[thread_prompt_key(row)] = {
+            "oldThreadBackfillPrompt": old_prompt,
+            "newExecutionThreadPrompt": new_prompt,
+        }
+        if row.get("stale"):
+            thread_prompts_by_branch[thread_prompt_key(row)]["staleRefreshPrompt"] = action["staleRefreshPrompt"]
+
+    cleanup_prompts: list[dict[str, Any]] = []
+    for task in active_without_worktree:
+        cleanup_prompts.append(
+            {
+                "taskId": task.get("taskId", ""),
+                "branch": task.get("branch", ""),
+                "worktreePath": task.get("worktreePath", ""),
+                "reason": tr(language, "cleanup_reason_missing_worktree"),
+                "prompt": tr(
+                    language,
+                    "cleanup_prompt",
+                    project_id=manager.project_id,
+                    task_id=task.get("taskId", ""),
+                    branch=task.get("branch", ""),
+                    worktree_path=task.get("worktreePath", ""),
+                ),
+                "hubReceiptExpected": HUB_RECEIPT_FIELDS,
+            }
+        )
+    return recommended_actions, thread_prompts_by_branch, cleanup_prompts
+
+
 def cmd_audit_project(args: argparse.Namespace) -> int:
     started_at = time.perf_counter()
     manager = make_manager(args)
@@ -2174,6 +2364,12 @@ def cmd_audit_project(args: argparse.Namespace) -> int:
         "activeTasksWithoutWorktree": len(active_without_worktree),
         "worktreeAuditErrors": len(errors),
     }
+    recommended_actions, thread_prompts_by_branch, cleanup_prompts = build_hub_action_prompts(
+        manager,
+        rows,
+        active_without_worktree,
+        language,
+    )
 
     output = {
         "projectId": manager.project_id,
@@ -2190,6 +2386,9 @@ def cmd_audit_project(args: argparse.Namespace) -> int:
         "activeTasksWithoutWorktree": active_without_worktree,
         "branchesNeedingBackfill": branches_needing_backfill,
         "backfillPromptsByBranch": backfill_by_branch,
+        "recommendedActions": recommended_actions,
+        "threadPromptsByBranch": thread_prompts_by_branch,
+        "cleanupPrompts": cleanup_prompts,
         "projectStatus": {
             "activeTaskCount": state.get("activeTaskCount", 0),
             "activeTasks": state.get("activeTasks", []),
