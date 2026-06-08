@@ -1,8 +1,10 @@
-# Agent Workflow Hub
+﻿# Agent Workflow Hub
 
 中文 | [English](./README.md)
 
-面向 Codex 多 worktree / 多 thread 开发的 Agent 工作流层。Agent Workflow Hub 通过本地 sidecar 帮助 Codex 协调多 worktree、多 thread、多 agent 开发，减少重复扫描和重复解释。
+面向 Codex 多 worktree / 多 thread 开发的 Agent 工作流层。Agent Workflow Hub 通过本地 sidecar 帮助 Codex 协调 project hub、execution thread、worktree、task、handoff、validation、safety rules 和 recommended actions。
+
+Agent Workflow Hub 是 workflow state layer，不是原生模型 memory/context 的替代品。即使 Codex、Claude Code、Cursor、Windsurf 等 agent 的内置记忆继续增强，多 worktree 开发仍然需要一个显式、可审计的协议来回答：哪个 task 正在进行、对应哪个 worktree、验证过什么、哪些内容 stale、哪些未知、下一步应该由哪个 thread 执行。减少重复扫描和降低 context rebuild 成本是收益，不是产品契约。
 
 日常入口是自然语言：
 
@@ -16,9 +18,25 @@ Use $agent-workflow-hub to resume this worktree.
 
 V2.7 起默认入口是 `$agent-workflow-hub`。`$context-handoff` 仍作为 legacy compatibility entrypoint 保留，并使用同一套本地 sidecar 数据、CLI 文件名和 JSON schema。已有 `%USERPROFILE%\.codex\projects\<project-id>\` 状态不会迁移。
 
+## 产品定位
+
+### 如果 agent 已经有 memory/context，为什么还需要它
+
+原生 agent memory 更适合记住用户偏好、近期对话和宽泛上下文。Agent Workflow Hub 关注的是显式项目工作流状态：task 身份、worktree 映射、handoff facts、inferences、unknowns、validation、safety rules、stale detection，以及 project hub 级 recommended actions。
+
+### 它不替代什么
+
+它不替代代码理解、测试、PR review、issue tracking、项目管理工具，也不替代 agent 自己的调查判断。`resume-feature` 和 `resume-query` 恢复的是已记录的 workflow state，不证明代码正确。
+
+### agent 继续变强后它仍然有价值的地方
+
+当工作跨多个 worktree、多个 execution thread、多个 agent 或长期 branch 时，状态需要独立于任意单个聊天记录，并且可见、可检查、可交接。sidecar 是可审计的项目状态，不是聊天记录库，也不是模型思维链存储。
+
+长版产品定位见 [docs/product/workflow-value-positioning.md](./docs/product/workflow-value-positioning.md)。
+
 ## 解决什么问题
 
-- 新 agent thread 反复扫描同一个仓库。
+- 新 execution thread 需要明确的 task/worktree 路由。
 - feature branch、worktree、thread 之间丢失任务状态。
 - 多 worktree 项目被拆成多个不相关的本地 projectId。
 - handoff、完成归档、audit、周报输出不一致。
@@ -165,8 +183,21 @@ Use $agent-workflow-hub to set human-facing output language to zh-CN.
 
 这只会把 `preferredLanguage` 写到 `%USERPROFILE%\.codex\projects\<project-id>\config.json`，不会修改目标项目仓库。
 
-## Sidecar 状态
+## 自然语言任务路由
 
+V2.8 增加确定性的自然语言 task routing。用户只说 `continue markerless clean` 时，agent 可以用 `resume-query --query "markerless clean"` 或 `resolve-task --query "markerless clean"`，从本地 sidecar 解析到正确 task/worktree，再执行 sidecar-first resume。
+
+这不是替代 agent 的代码理解、测试或 PR review。它只是一个稳定、可审计、低摩擦的 workflow routing layer：恢复最近记录的 workflow state，并给出 branch、worktree、HEAD、dirty status、nextStep、blocker、validation、safetyRules 和 startThreadSummary。
+
+解析完全本地确定性执行：字符串归一化、token overlap 和 `difflib`，不使用 LLM、embedding、向量库、UI、MCP 或 thread API。高置信时 `resume-query` 自动 resume；低置信或多个候选相近时只返回候选和一句消歧问题，不猜。
+
+Task alias 支持：
+
+- `start-feature --alias "markerless clean"` 和 `handoff --alias "markerless clean"` 会持久化用户确认过的 alias。
+- `alias-task --alias "markerless clean"` 添加 alias。
+- `alias-task --remove-alias "markerless clean"` 删除 alias。
+- 程序生成的 alias 会参与匹配，但不会污染 task 的持久化 `aliases`。
+## Sidecar 状态
 动态状态只保存在本机，不进入目标仓库：
 
 ```text

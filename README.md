@@ -2,7 +2,9 @@
 
 [中文](./README.zh-CN.md) | English
 
-Agent-native development workflow layer for Codex worktrees. Agent Workflow Hub helps Codex coordinate multi-worktree, multi-thread, and multi-agent development through a local sidecar without repeatedly rebuilding project context.
+Agent-native development workflow layer for Codex worktrees. Agent Workflow Hub helps Codex coordinate project hubs, execution threads, worktrees, tasks, handoffs, validation, safety rules, and recommended actions through a local sidecar.
+
+Agent Workflow Hub is a workflow state layer, not a replacement for native model memory or context windows. Even as Codex, Claude Code, Cursor, Windsurf, and other agents improve their built-in memory, multi-worktree development still benefits from an explicit, auditable protocol for what task is active, what was validated, what is stale, what is unknown, and which thread should act next. Reduced repeat scanning and lower context rebuild cost are benefits, not the product contract.
 
 The normal interface is conversation:
 
@@ -17,9 +19,25 @@ The primary skill bundles its own Python sidecar CLI under `skills/agent-workflo
 
 `$agent-workflow-hub` is the default entrypoint from V2.7 onward. `$context-handoff` remains available as a legacy compatibility entrypoint and uses the same local sidecar data, CLI file name, and JSON schema. Existing state under `%USERPROFILE%\.codex\projects\<project-id>\` is not migrated.
 
+## Positioning
+
+### Why This Exists If Agents Already Have Memory/Context
+
+Native agent memory is good at remembering preferences, recent conversations, and broad context. Agent Workflow Hub focuses on explicit project workflow state: task identity, worktree mapping, handoff facts, inferences, unknowns, validation, safety rules, stale detection, and hub-level recommended actions.
+
+### What It Does Not Replace
+
+It does not replace code understanding, tests, PR review, issue tracking, project management tools, or the agent's own investigation. `resume-feature` and `resume-query` restore recorded workflow state; they do not prove correctness.
+
+### Where It Remains Useful As Agents Improve
+
+It remains useful when work spans multiple worktrees, multiple execution threads, multiple agents, or long-running branches where state must be visible, inspectable, and independent of any one chat transcript. The sidecar is auditable project state, not a chat log or model reasoning store.
+
+For the long-form product framing, see [docs/product/workflow-value-positioning.md](./docs/product/workflow-value-positioning.md).
+
 ## What It Solves
 
-- New agent threads repeatedly scan the same repository.
+- New execution threads need explicit task/worktree routing.
 - Feature branches, worktrees, and threads lose task status.
 - Multi-worktree projects get split into unrelated local project IDs.
 - Handoff, finish/archive, audit, and weekly reporting become inconsistent.
@@ -61,6 +79,10 @@ Use $agent-workflow-hub to start this feature. Goal: improve the dashboard UI.
 
 ```text
 Use $agent-workflow-hub to resume this worktree and tell me the immediate next step.
+```
+
+```text
+Use $agent-workflow-hub to continue markerless clean.
 ```
 
 ```text
@@ -165,6 +187,25 @@ Use $agent-workflow-hub to set human-facing output language to zh-CN.
 
 This writes `preferredLanguage` only under `%USERPROFILE%\.codex\projects\<project-id>\config.json` and does not mutate the target repository.
 
+## Natural-Language Routing
+
+V2.8 adds deterministic task routing for project hubs and execution threads. When the user says something like `continue markerless clean`, agents should use `resume-query --query "markerless clean"` or `resolve-task --query "markerless clean"` with a known project/worktree path.
+
+This routing layer is sidecar-first, git-aware, and scan-minimal. It restores the last recorded workflow state for the resolved task; it does not prove code correctness, replace tests, or replace PR review. Agents still choose their own investigation strategy and may use sidecar state, handoffs, Git facts, touched files, recent commits, PRs, issues, tests, or targeted search as needed.
+
+Resolution uses local deterministic matching only: normalized strings, token overlap, and `difflib`. It does not use an LLM, embeddings, a vector database, UI, MCP, or any thread API.
+
+Task aliases are supported:
+
+- `start-feature --alias "markerless clean"` and `handoff --alias "markerless clean"` persist user-confirmed aliases on the task.
+- `alias-task --alias "markerless clean"` adds an alias to the current or selected task.
+- `alias-task --remove-alias "markerless clean"` removes an alias.
+- Generated aliases from branch, task id, worktree name, goal, touched areas, and handoff summary participate in matching but are not persisted.
+
+`resolve-task` returns short JSON with `resolved`, `confidence`, `taskId`, `branch`, `worktreePath`, `matchedFields`, `candidates`, and `disambiguationQuestion`. High-confidence matches can be resumed automatically by `resume-query`; low-confidence or close candidates return one question instead of guessing.
+
+Project discovery records `canonicalRepoRoot`, `projectContainerRoots`, and `knownWorktreeRoots` in local sidecar config. This lets a hub thread route from a non-Git container directory to a known project when there is a single clear match. If multiple projects match, the CLI returns candidates and asks for disambiguation.
+
 ## Sidecar State
 
 Dynamic state is local-only and stays outside your repository:
@@ -197,7 +238,10 @@ Base branch can be overridden with `--base-branch dev`; the value is persisted i
 - `doctor`: Check Python, Git, sidecar, and optional GitHub CLI readiness.
 - `setup`: Create the local sidecar layout.
 - `start-feature`: Track the current branch/worktree as an active task.
+- `alias-task`: Add or remove human-friendly task aliases.
+- `resolve-task`: Resolve a natural-language query to a sidecar task without resuming.
 - `resume-feature`: Recover compact context, stale detection, and a `startThreadSummary`.
+- `resume-query`: Resolve a natural-language query, then run sidecar-first resume on the matched worktree when confidence is high.
 - `handoff`: Save incomplete work, next step, facts, inferences, unknowns, validation, and safety rules.
 - `audit-context`: Report missing handoff, stale git state, missing validation, missing safety rules, dirty worktree, and backfill prompts.
 - `audit-project`: Audit all Git worktrees for a project hub inventory, compare real worktrees with sidecar active tasks, and generate branch-level backfill prompts, recommended actions, execution-thread prompts, and cleanup prompts.

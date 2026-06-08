@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import difflib
 import hashlib
 import json
 import os
@@ -136,6 +137,10 @@ TEXT = {
         "no": "no",
         "weekly_ready": "Weekly context report is ready: {path}",
         "issue_draft_guidance": "Draft only by default. Ask to create issue or enable dogfood issue mode to allow creation.",
+        "resolver_no_match": "No task matched \"{query}\". Please give a branch, task id, or alias.",
+        "resolver_disambiguation": "I found multiple possible tasks for \"{query}\": {candidates}. Which one do you want to continue?",
+        "resolver_project_multiple": "Multiple projects matched this container path. Which project should Agent Workflow Hub use?",
+        "resolver_project_missing": "This path is not a Git worktree and no known Agent Workflow Hub project matched it. Please provide --worktree or --project-id.",
         "action_reason_missing_task": "sidecar task missing",
         "action_reason_stale": "task snapshot is stale",
         "action_reason_missing_handoff": "handoff missing",
@@ -310,6 +315,16 @@ TEXT["zh-CN"].update(
 )
 
 
+TEXT["zh-CN"].update(
+    {
+        "resolver_no_match": "没有任务匹配“{query}”。请提供分支、task id 或 alias。",
+        "resolver_disambiguation": "我找到了多个可能的“{query}”任务：{candidates}。你要继续哪个？",
+        "resolver_project_multiple": "这个容器路径匹配到多个项目。Agent Workflow Hub 应该使用哪个项目？",
+        "resolver_project_missing": "这个路径不是 Git worktree，也没有匹配到已知 Agent Workflow Hub 项目。请提供 --worktree 或 --project-id。",
+    }
+)
+
+
 def now_iso() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
@@ -398,6 +413,7 @@ def compact_task(task: dict[str, Any]) -> dict[str, Any]:
         "branch": task.get("branch", ""),
         "baseBranch": task.get("baseBranch", ""),
         "worktreePath": task.get("worktreePath", ""),
+        "aliases": task.get("aliases", []),
         "prUrl": pr_url,
         "prSearchUrl": pr_search_url,
         "touchedAreas": task.get("touchedAreas", []),
@@ -444,6 +460,15 @@ def unique_normalized_nonempty(values: list[str], limit: int | None = None) -> l
         if limit is not None and len(result) >= limit:
             break
     return result
+
+
+def add_unique_path(values: list[Any], path: Path | str | None, *, limit: int | None = None) -> list[str]:
+    result = [str(item).strip() for item in values if str(item).strip()]
+    if path:
+        with contextlib.suppress(OSError):
+            candidate = str(Path(path).resolve())
+            result.append(candidate)
+    return unique_normalized_nonempty(result, limit=limit)
 
 
 def normalized_note_list(values: list[str] | None, limit: int | None = None, max_len: int = 240) -> list[str]:
@@ -933,6 +958,8 @@ class SidecarManager:
                     "remoteUrl": self.git.remote_url,
                     "lastWorktreePath": str(self.git.worktree_path),
                     "currentWorktreePath": str(self.git.worktree_path),
+                    "knownWorktreeRoots": [str(self.git.worktree_path)],
+                    "projectContainerRoots": [str(self.git.repo_root.parent)],
                     "updatedAt": now_iso(),
                 },
             )
@@ -951,6 +978,8 @@ class SidecarManager:
         config.setdefault("canonicalRepoRoot", config.get("repoRoot") or str(self.git.repo_root))
         config.setdefault("repoRoot", config["canonicalRepoRoot"])
         config["preferredLanguage"] = normalize_language(config.get("preferredLanguage") or "en")
+        config["knownWorktreeRoots"] = add_unique_path(config.get("knownWorktreeRoots") or [], self.git.worktree_path)
+        config["projectContainerRoots"] = add_unique_path(config.get("projectContainerRoots") or [], self.git.repo_root.parent)
         config["lastWorktreePath"] = str(self.git.worktree_path)
         config["currentWorktreePath"] = str(self.git.worktree_path)
         if self.base_branch_override:
@@ -972,6 +1001,8 @@ class SidecarManager:
         config.setdefault("repoRoot", config["canonicalRepoRoot"])
         if "preferredLanguage" in config:
             config["preferredLanguage"] = normalize_language(config.get("preferredLanguage") or "en")
+        config["knownWorktreeRoots"] = add_unique_path(config.get("knownWorktreeRoots") or [], self.git.worktree_path)
+        config["projectContainerRoots"] = add_unique_path(config.get("projectContainerRoots") or [], self.git.repo_root.parent)
         config["gitCommonDir"] = str(self.git.common_dir) if self.git.common_dir else ""
         config["remoteUrl"] = self.git.remote_url
         config["lastWorktreePath"] = str(self.git.worktree_path)
@@ -1006,6 +1037,10 @@ class SidecarManager:
             task.setdefault("inferences", [])
             task.setdefault("unknowns", [])
             task.setdefault("safetyRules", [])
+            task["aliases"] = unique_normalized_nonempty(
+                [short_text(str(item), max_len=80) for item in task.get("aliases", [])],
+                limit=20,
+            )
             for field in ["facts", "inferences", "unknowns", "safetyRules"]:
                 task[field] = unique_normalized_nonempty([str(item) for item in task.get(field, [])], limit=30)
         if not self.project_state_path.exists():
@@ -1112,6 +1147,7 @@ class SidecarManager:
             "branch": self.git.branch,
             "baseBranch": self.git.base_branch,
             "worktreePath": str(self.git.worktree_path),
+            "aliases": [],
             "repoRoot": str(self.git.repo_root),
             "headSha": self.git.head_sha,
             "upstream": self.git.upstream,
@@ -1174,6 +1210,12 @@ class SidecarManager:
             )
         elif not task.get("touchedAreas"):
             task["touchedAreas"] = self.default_touched_areas()
+
+        aliases = normalized_note_list(getattr(args, "aliases", None), limit=20, max_len=80)
+        if aliases:
+            task["aliases"] = unique_normalized_nonempty([*task.get("aliases", []), *aliases], limit=20)
+        else:
+            task.setdefault("aliases", [])
 
         for field, arg_name in [
             ("facts", "facts"),
@@ -1805,6 +1847,223 @@ def build_weekly_report(manager: SidecarManager, state: dict[str, Any], period: 
     return "\n".join(lines) + "\n"
 
 
+def normalize_query_text(value: str) -> str:
+    value = value.casefold()
+    value = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", " ", value)
+    return " ".join(value.split())
+
+
+def query_tokens(value: str) -> set[str]:
+    return {token for token in normalize_query_text(value).split() if token}
+
+
+def generated_task_aliases(task: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    for field in ["taskId", "branch", "goal"]:
+        if task.get(field):
+            values.append(str(task[field]))
+    worktree_path = str(task.get("worktreePath") or "").strip()
+    if worktree_path:
+        path = Path(worktree_path)
+        values.append(path.name)
+        if path.parent.name:
+            values.append(f"{path.parent.name} {path.name}")
+    for area in task.get("touchedAreas") or []:
+        values.append(str(area))
+    branch = str(task.get("branch") or "")
+    if branch:
+        values.extend(part for part in re.split(r"[/_-]+", branch) if len(part) >= 3)
+    goal = str(task.get("goal") or "")
+    if goal:
+        values.extend(" ".join(goal.split()[index : index + 3]) for index in range(max(0, len(goal.split()) - 2)))
+    return unique_normalized_nonempty(values, limit=30)
+
+
+def task_handoff_summary(manager: SidecarManager, task: dict[str, Any]) -> str:
+    path = manager.handoff_path_for(task)
+    if not path.exists():
+        return ""
+    try:
+        return short_text(path.read_text(encoding="utf-8", errors="replace"), max_len=1200)
+    except OSError:
+        return ""
+
+
+def score_text_match(query: str, value: str) -> float:
+    query_norm = normalize_query_text(query)
+    value_norm = normalize_query_text(value)
+    if not query_norm or not value_norm:
+        return 0.0
+    if query_norm == value_norm:
+        return 1.0
+    if query_norm in value_norm or value_norm in query_norm:
+        return 0.86
+    q_tokens = query_tokens(query_norm)
+    v_tokens = query_tokens(value_norm)
+    overlap = len(q_tokens & v_tokens) / len(q_tokens) if q_tokens else 0.0
+    ratio = difflib.SequenceMatcher(None, query_norm, value_norm).ratio()
+    return max(overlap, ratio * 0.72)
+
+
+def score_task_candidate(manager: SidecarManager, task: dict[str, Any], query: str) -> dict[str, Any]:
+    fields: list[tuple[str, str, float]] = []
+    for alias in task.get("aliases") or []:
+        fields.append(("aliases", str(alias), 1.0))
+    for alias in generated_task_aliases(task):
+        fields.append(("generatedAliases", alias, 0.88))
+    for field, weight in [
+        ("taskId", 0.82),
+        ("branch", 0.8),
+        ("worktreePath", 0.74),
+        ("goal", 0.62),
+        ("lastThreadSummary", 0.52),
+    ]:
+        value = str(task.get(field) or "")
+        if value:
+            fields.append((field, Path(value).name if field == "worktreePath" else value, weight))
+            if field == "worktreePath":
+                fields.append((field, value, weight * 0.86))
+    for area in task.get("touchedAreas") or []:
+        fields.append(("touchedAreas", str(area), 0.46))
+    summary = task_handoff_summary(manager, task)
+    if summary:
+        fields.append(("handoffSummary", summary, 0.4))
+
+    best_score = 0.0
+    matched_fields: list[dict[str, Any]] = []
+    for field, value, weight in fields:
+        raw = score_text_match(query, value)
+        score = raw * weight
+        if score >= 0.28:
+            matched_fields.append({"field": field, "value": short_text(value, max_len=120), "score": round(score, 3)})
+        best_score = max(best_score, score)
+
+    q_tokens = query_tokens(query)
+    combined = " ".join(str(task.get(field) or "") for field in ["taskId", "branch", "goal", "lastThreadSummary"])
+    combined += " " + " ".join(str(item) for item in task.get("aliases") or [])
+    combined += " " + " ".join(str(item) for item in task.get("touchedAreas") or [])
+    combined_tokens = query_tokens(combined)
+    token_score = (len(q_tokens & combined_tokens) / len(q_tokens)) if q_tokens else 0.0
+    confidence = min(1.0, max(best_score, token_score * 0.78))
+    matched_fields = sorted(matched_fields, key=lambda item: item["score"], reverse=True)[:5]
+    return {
+        "taskId": task.get("taskId", ""),
+        "branch": task.get("branch", ""),
+        "worktreePath": task.get("worktreePath", ""),
+        "goal": task.get("goal", ""),
+        "status": task.get("status", "active"),
+        "confidence": round(confidence, 3),
+        "matchedFields": matched_fields,
+    }
+
+
+def resolve_task_from_manager(manager: SidecarManager, query: str, language: str = "en") -> dict[str, Any]:
+    payload = manager.load_active_tasks()
+    candidates = [
+        score_task_candidate(manager, task, query)
+        for task in payload.get("tasks", [])
+        if task.get("status", "active") in VALID_STATUSES
+    ]
+    candidates = sorted(candidates, key=lambda item: item.get("confidence", 0.0), reverse=True)
+    top = candidates[0] if candidates else None
+    second = candidates[1] if len(candidates) > 1 else None
+    top_score = float((top or {}).get("confidence", 0.0))
+    second_score = float((second or {}).get("confidence", 0.0))
+    clearly_best = bool(top and top_score >= 0.72 and (top_score - second_score >= 0.14 or top_score >= 0.9))
+    question = ""
+    if not candidates:
+        question = tr(language, "resolver_no_match", query=query)
+    elif not clearly_best:
+        names = [
+            f"{item.get('branch') or item.get('taskId')} ({item.get('confidence')})"
+            for item in candidates[:3]
+        ]
+        question = tr(language, "resolver_disambiguation", query=query, candidates=", ".join(names))
+    return {
+        "resolved": clearly_best,
+        "confidence": top_score if top else 0.0,
+        "taskId": top.get("taskId", "") if top else "",
+        "branch": top.get("branch", "") if top else "",
+        "worktreePath": top.get("worktreePath", "") if top else "",
+        "matchedFields": top.get("matchedFields", []) if top else [],
+        "candidates": candidates[:5],
+        "disambiguationQuestion": question,
+    }
+
+
+def task_by_id(manager: SidecarManager, payload: dict[str, Any], task_id: str) -> dict[str, Any] | None:
+    for task in payload.get("tasks", []):
+        if task.get("taskId") == task_id:
+            normalize_task_pr_fields(task, manager.git.pr_search_url)
+            return task
+    return None
+
+
+def find_project_configs_for_path(path: Path) -> list[dict[str, Any]]:
+    projects_root = Path.home() / ".codex" / "projects"
+    if not projects_root.exists():
+        return []
+    target = path
+    with contextlib.suppress(OSError):
+        target = path.resolve()
+    matches: list[dict[str, Any]] = []
+    for config_path in projects_root.glob("*/config.json"):
+        payload = read_json(config_path, {})
+        roots = []
+        for key in ["canonicalRepoRoot", "repoRoot", "currentWorktreePath", "lastWorktreePath"]:
+            if payload.get(key):
+                roots.append(payload[key])
+        roots.extend(payload.get("knownWorktreeRoots") or [])
+        roots.extend(payload.get("projectContainerRoots") or [])
+        matched_root = ""
+        for root in roots:
+            try:
+                root_path = Path(str(root)).resolve()
+            except OSError:
+                continue
+            try:
+                if target == root_path or root_path in target.parents or target in root_path.parents:
+                    matched_root = str(root_path)
+                    break
+            except ValueError:
+                continue
+        if matched_root:
+            matches.append(
+                {
+                    "projectId": payload.get("projectId") or config_path.parent.name,
+                    "configPath": str(config_path),
+                    "canonicalRepoRoot": payload.get("canonicalRepoRoot") or payload.get("repoRoot") or "",
+                    "currentWorktreePath": payload.get("currentWorktreePath") or payload.get("lastWorktreePath") or "",
+                    "matchedRoot": matched_root,
+                }
+            )
+    return matches
+
+
+def make_manager_for_query(args: argparse.Namespace, language: str = "en") -> tuple[SidecarManager | None, dict[str, Any]]:
+    worktree = Path(getattr(args, "worktree", None) or os.getcwd())
+    ok, _ = detect_git_repo(worktree)
+    if ok or getattr(args, "project_id", ""):
+        manager = make_manager(args)
+        return manager, {"resolvedProject": True, "projectCandidates": []}
+    matches = find_project_configs_for_path(worktree)
+    if len(matches) == 1:
+        resolved_path = matches[0].get("currentWorktreePath") or matches[0].get("canonicalRepoRoot") or str(worktree)
+        manager = SidecarManager(
+            Path(resolved_path),
+            project_id_override=getattr(args, "project_id", "") or str(matches[0].get("projectId") or ""),
+            base_branch_override=getattr(args, "base_branch", "") or "",
+        )
+        return manager, {"resolvedProject": True, "projectCandidates": matches}
+    return None, {
+        "resolvedProject": False,
+        "projectCandidates": matches,
+        "disambiguationQuestion": tr(language, "resolver_project_multiple")
+        if matches
+        else tr(language, "resolver_project_missing"),
+    }
+
+
 def make_manager(args: argparse.Namespace) -> SidecarManager:
     return SidecarManager(
         Path(getattr(args, "worktree", None) or os.getcwd()),
@@ -1979,6 +2238,180 @@ def cmd_start_feature(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_alias_task(args: argparse.Namespace) -> int:
+    started_at = time.perf_counter()
+    manager = make_manager(args)
+    payload = manager.load_active_tasks()
+    task = task_by_id(manager, payload, slugify(args.task_id)) if getattr(args, "task_id", None) else None
+    conflicts: list[str] = []
+    if task is None:
+        task, conflicts = manager.find_task(payload)
+    if task is None:
+        raise SystemExit("no matching task to alias")
+
+    before = list(task.get("aliases") or [])
+    add_aliases = normalized_note_list(getattr(args, "aliases", None), limit=20, max_len=80)
+    remove_keys = {normalized_dedupe_key(item) for item in (getattr(args, "remove_aliases", None) or []) if item.strip()}
+    aliases = unique_normalized_nonempty([*before, *add_aliases], limit=20)
+    if remove_keys:
+        aliases = [item for item in aliases if normalized_dedupe_key(item) not in remove_keys]
+    task["aliases"] = aliases
+    task["updatedAt"] = now_iso()
+    manager.save_active_tasks(payload)
+    manager.log_event(
+        "alias-task",
+        task_id=task.get("taskId", ""),
+        started_at=started_at,
+        sidecar_hit=True,
+        handoff_available=manager.handoff_path_for(task).exists(),
+        aliasesAdded=[item for item in aliases if normalized_dedupe_key(item) not in {normalized_dedupe_key(old) for old in before}],
+        aliasesRemoved=[item for item in before if normalized_dedupe_key(item) in remove_keys],
+    )
+    print(
+        json.dumps(
+            {
+                "projectId": manager.project_id,
+                "taskId": task.get("taskId", ""),
+                "aliases": aliases,
+                "removedAliases": [item for item in before if normalized_dedupe_key(item) in remove_keys],
+                "conflicts": conflicts,
+                "activeTasksPath": str(manager.active_tasks_path),
+                "repoMutated": False,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0
+
+
+def cmd_resolve_task(args: argparse.Namespace) -> int:
+    language = normalize_language(getattr(args, "language", "") or "en")
+    manager, project_resolution = make_manager_for_query(args, language)
+    if manager is None:
+        print(
+            json.dumps(
+                {
+                    "resolved": False,
+                    "confidence": 0.0,
+                    "projectResolution": project_resolution,
+                    "candidates": [],
+                    "disambiguationQuestion": project_resolution.get("disambiguationQuestion", ""),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+    language = resolve_language(args, manager)
+    result = resolve_task_from_manager(manager, args.query, language)
+    result.update(
+        {
+            "projectId": manager.project_id,
+            "projectResolution": project_resolution,
+            "sidecarRoot": str(manager.sidecar_root),
+        }
+    )
+    manager.log_event(
+        "resolve-task",
+        task_id=result.get("taskId", ""),
+        sidecar_hit=bool(result.get("resolved")),
+        handoff_available=None,
+        scan_scope="sidecar-task-resolver",
+        query=args.query,
+        confidence=result.get("confidence", 0.0),
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_resume_query(args: argparse.Namespace) -> int:
+    started_at = time.perf_counter()
+    language = normalize_language(getattr(args, "language", "") or "en")
+    manager, project_resolution = make_manager_for_query(args, language)
+    if manager is None:
+        print(
+            json.dumps(
+                {
+                    "resolved": False,
+                    "confidence": 0.0,
+                    "projectResolution": project_resolution,
+                    "candidates": [],
+                    "disambiguationQuestion": project_resolution.get("disambiguationQuestion", ""),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+
+    language = resolve_language(args, manager)
+    resolution = resolve_task_from_manager(manager, args.query, language)
+    if not resolution.get("resolved"):
+        resolution.update({"projectId": manager.project_id, "projectResolution": project_resolution})
+        manager.log_event(
+            "resume-query",
+            started_at=started_at,
+            task_id=resolution.get("taskId", ""),
+            sidecar_hit=False,
+            handoff_available=None,
+            scan_scope="sidecar-task-resolver",
+            query=args.query,
+            confidence=resolution.get("confidence", 0.0),
+        )
+        print(json.dumps(resolution, ensure_ascii=False, indent=2))
+        return 0
+
+    resolved_manager = SidecarManager(
+        Path(resolution.get("worktreePath") or manager.git.worktree_path),
+        project_id_override=getattr(args, "project_id", "") or manager.project_id,
+        base_branch_override=getattr(args, "base_branch", "") or manager.git.base_branch,
+    )
+    language = resolve_language(args, resolved_manager)
+    payload = resolved_manager.load_active_tasks()
+    task = task_by_id(resolved_manager, payload, resolution.get("taskId", ""))
+    conflicts: list[str] = []
+    if task is None:
+        task, conflicts = resolved_manager.find_task(payload)
+    sidecar_hit = task is not None
+    if task is None:
+        task = resolved_manager.default_task()
+    resume = build_resume_payload(resolved_manager, task, conflicts, sidecar_hit, language)
+    output = {
+        "resolved": True,
+        "confidence": resolution.get("confidence", 0.0),
+        "query": args.query,
+        "projectId": resolved_manager.project_id,
+        "projectResolution": project_resolution,
+        "taskId": task.get("taskId", ""),
+        "branch": resolved_manager.git.branch,
+        "worktreePath": str(resolved_manager.git.worktree_path),
+        "cd": str(resolved_manager.git.worktree_path),
+        "headSha": resolved_manager.git.head_sha,
+        "dirty": bool(resolved_manager.git.dirty_files),
+        "dirtyFiles": resolved_manager.git.dirty_files,
+        "nextStep": task.get("nextStep", ""),
+        "blocker": task.get("blocker", ""),
+        "validation": task.get("validation", {}),
+        "safetyRules": task.get("safetyRules", []),
+        "matchedFields": resolution.get("matchedFields", []),
+        "resume": resume,
+        "startThreadSummary": resume.get("startThreadSummary", ""),
+    }
+    resolved_manager.log_event(
+        "resume-query",
+        started_at=started_at,
+        task_id=task.get("taskId", ""),
+        sidecar_hit=sidecar_hit,
+        handoff_available=resume.get("handoffAvailable"),
+        scan_scope="sidecar-task-resolver",
+        query=args.query,
+        confidence=resolution.get("confidence", 0.0),
+    )
+    print(json.dumps(output, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_resume_feature(args: argparse.Namespace) -> int:
     started_at = time.perf_counter()
     manager = make_manager(args)
@@ -1989,6 +2422,29 @@ def cmd_resume_feature(args: argparse.Namespace) -> int:
     if task is None:
         task = manager.default_task()
 
+    snapshot = build_resume_payload(manager, task, conflicts, sidecar_hit, language)
+    manager.log_event(
+        "resume",
+        task_id=task["taskId"],
+        started_at=started_at,
+        sidecar_hit=sidecar_hit,
+        handoff_available=snapshot["handoffAvailable"],
+        estimatedRebuildMinutes=args.estimated_rebuild_minutes if args.estimated_rebuild_minutes is not None else None,
+        duplicateScan=args.duplicate_scan,
+        firstStepCorrect=args.first_step_correct,
+        notes=args.notes or "",
+    )
+    print(json.dumps(snapshot, ensure_ascii=False, indent=2))
+    return 0
+
+
+def build_resume_payload(
+    manager: SidecarManager,
+    task: dict[str, Any],
+    conflicts: list[str],
+    sidecar_hit: bool,
+    language: str,
+) -> dict[str, Any]:
     snapshot = manager.task_snapshot(task, conflicts)
     stale = stale_detection(task, manager.git)
     snapshot.update(
@@ -2014,20 +2470,7 @@ def cmd_resume_feature(args: argparse.Namespace) -> int:
     for doc in snapshot["stableDocs"]:
         if doc["exists"] != "true":
             snapshot["missingContext"].append(f"missing stable doc: {doc['name']}")
-
-    manager.log_event(
-        "resume",
-        task_id=task["taskId"],
-        started_at=started_at,
-        sidecar_hit=sidecar_hit,
-        handoff_available=snapshot["handoffAvailable"],
-        estimatedRebuildMinutes=args.estimated_rebuild_minutes if args.estimated_rebuild_minutes is not None else None,
-        duplicateScan=args.duplicate_scan,
-        firstStepCorrect=args.first_step_correct,
-        notes=args.notes or "",
-    )
-    print(json.dumps(snapshot, ensure_ascii=False, indent=2))
-    return 0
+    return snapshot
 
 
 def audit_context_payload(manager: SidecarManager, payload: dict[str, Any] | None = None, language: str = "en") -> dict[str, Any]:
@@ -2747,6 +3190,7 @@ def build_parser() -> argparse.ArgumentParser:
         subparser.add_argument("--task-id")
         subparser.add_argument("--status", choices=sorted(VALID_STATUSES))
         subparser.add_argument("--goal")
+        subparser.add_argument("--alias", dest="aliases", action="append")
         subparser.add_argument("--next-step")
         subparser.add_argument("--blocker")
         subparser.add_argument("--thread-summary")
@@ -2795,6 +3239,18 @@ def build_parser() -> argparse.ArgumentParser:
     add_task_update_args(start_parser)
     start_parser.set_defaults(func=cmd_start_feature)
 
+    alias_parser = subparsers.add_parser("alias-task", help="Add or remove human-friendly aliases for a task")
+    add_common(alias_parser)
+    alias_parser.add_argument("--task-id", help="Task id to edit. Defaults to current branch/worktree task.")
+    alias_parser.add_argument("--alias", dest="aliases", action="append", help="Alias to add. Can be repeated.")
+    alias_parser.add_argument("--remove-alias", dest="remove_aliases", action="append", help="Alias to remove. Can be repeated.")
+    alias_parser.set_defaults(func=cmd_alias_task)
+
+    resolve_parser = subparsers.add_parser("resolve-task", help="Resolve a natural-language query to a sidecar task")
+    add_common(resolve_parser)
+    resolve_parser.add_argument("--query", required=True, help="Natural-language task query, alias, branch, or worktree hint.")
+    resolve_parser.set_defaults(func=cmd_resolve_task)
+
     resume_parser = subparsers.add_parser("resume-feature", help="Resolve the current task and print compact resume JSON")
     add_common(resume_parser)
     resume_parser.add_argument("--estimated-rebuild-minutes", type=int)
@@ -2802,6 +3258,11 @@ def build_parser() -> argparse.ArgumentParser:
     resume_parser.add_argument("--first-step-correct", action="store_true")
     resume_parser.add_argument("--notes", default="")
     resume_parser.set_defaults(func=cmd_resume_feature)
+
+    resume_query_parser = subparsers.add_parser("resume-query", help="Resolve a natural-language query and resume the matched task")
+    add_common(resume_query_parser)
+    resume_query_parser.add_argument("--query", required=True, help="Natural-language task query, alias, branch, or worktree hint.")
+    resume_query_parser.set_defaults(func=cmd_resume_query)
 
     audit_parser = subparsers.add_parser("audit-context", help="Audit current sidecar context for staleness and missing trust fields")
     add_common(audit_parser)
