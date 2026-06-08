@@ -194,7 +194,7 @@ Base branch can be overridden with `--base-branch dev`; the value is persisted i
 - `resume-feature`: Recover compact context, stale detection, and a `startThreadSummary`.
 - `handoff`: Save incomplete work, next step, facts, inferences, unknowns, validation, and safety rules.
 - `audit-context`: Report missing handoff, stale git state, missing validation, missing safety rules, dirty worktree, and backfill prompts.
-- `audit-project`: Audit all Git worktrees for a project hub inventory, compare real worktrees with sidecar active tasks, and generate branch-level backfill prompts.
+- `audit-project`: Audit all Git worktrees for a project hub inventory, compare real worktrees with sidecar active tasks, and generate branch-level backfill prompts, recommended actions, execution-thread prompts, and cleanup prompts.
 - `finish-feature`: Archive the task and generate PR title/body; create a PR only when explicitly requested and GitHub CLI is ready.
 - `project-status`: Summarize compact sidecar project state. It is not the full Git worktree inventory.
 - `weekly-report`: Write a human-facing Markdown report under the sidecar `reports/` directory.
@@ -221,14 +221,22 @@ The skill runs `audit-project`, which uses `git worktree list --porcelain`, audi
 - Dirty, stale, missing handoff, missing validation, and missing safety-rule worktrees.
 - Sidecar tasks whose recorded worktree no longer exists.
 - Backfill prompts grouped by branch/worktree.
+- Recommended actions with copyable old-thread and new execution-thread prompts.
+- Cleanup prompts for sidecar tasks whose recorded worktree no longer exists.
 
 Rows with `sidecarHit: false` use `taskStatus: "missing"` because no real sidecar task exists. They may include `provisionalTaskStatus` from the audit-only default task; `taskStatus` always reflects sidecar state.
 
 If a requested project id is normalized, such as `paus_robot_lab_host` becoming `paus-robot-lab-host`, the output reports that canonicalization explicitly.
 
+When an old execution thread exists, send it `oldThreadBackfillPrompt` first because it may have semantic context Git cannot recover. If no old execution thread exists, open a new Primary Execution Thread with `newExecutionThreadPrompt`. That thread must recover or initialize sidecar state, distinguish facts/inferences/unknowns, add validation/safety/nextStep, save a handoff, and report back to the Project Hub.
+
+These prompts standardize the collaboration artifact; they do not micromanage the agent's investigation path. Agents may use sidecar state, handoff Markdown, Git facts, touched files, recent commits, PRs, issues, tests, or targeted search as needed.
+
 ## Trustworthy Handoffs
 
 Git history can recover objective facts such as branches, commits, and touched files. It cannot reliably recover intent, design decisions, blockers, validation status, or the correct next step.
+
+`touchedFiles` means current Git dirty/touched files. It is one locator signal when context is thin, not an instruction to inspect touched files first or perform a full scan.
 
 V2.2 handoffs deliberately separate:
 

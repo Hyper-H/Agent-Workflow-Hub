@@ -123,7 +123,7 @@ You are an Explainer Thread for <project>. Repo/worktree: <path>. Explain <topic
 - `resume-feature`: Recover compact task state, latest handoff availability, stable docs, git status, and next-step hints. Use when taking over or continuing a branch.
 - `handoff`: Save incomplete work, next step, blockers, touched areas, facts, inferences, unknowns, validation commands/results/time, safety rules, and a concise thread summary.
 - `audit-context`: Check whether the current context is trustworthy before handoff/resume. It reports missing handoff, stale HEAD/dirty files, missing validation, missing safety rules, dirty worktree, and backfill prompts.
-- `audit-project`: Project hub inventory for all Git worktrees. It compares real `git worktree list` output with sidecar active tasks, audits every worktree, and reports untracked worktrees, stale tasks, missing validation/safety/handoff, and backfill prompts.
+- `audit-project`: Project hub inventory for all Git worktrees. It compares real `git worktree list` output with sidecar active tasks, audits every worktree, and reports untracked worktrees, stale tasks, missing validation/safety/handoff, recommended actions, execution-thread prompts, and cleanup prompts.
 - `finish-feature`: Finish and archive the active task. Create a PR only if the user explicitly asks and GitHub CLI is already installed and authenticated.
 - `project-status`: Return compact sidecar project state for planning. This is not the full Git worktree inventory.
 - `weekly-report`: Generate a human-facing Markdown report under the sidecar `reports/` directory and reply with a short notification, not the full report by default.
@@ -158,12 +158,16 @@ When the user asks for project hub status, whole-project status, all worktrees, 
 2. If `audit-project` is unavailable, fall back to `project-status`, `git -C <canonical-repo> worktree list --porcelain`, and per-worktree `audit-context`.
 3. Report a table with branch, worktree path, headSha, dirty/clean, sidecarHit, task status, handoffAvailable, validationPresent, safetyRulesPresent, stale, blocker, and nextStep.
 4. Explicitly report total Git worktrees, total sidecar active tasks, tracked versus untracked worktrees, dirty worktrees, stale worktrees, missing validation/safety/handoff, and active sidecar tasks whose worktree no longer exists.
-5. Group concrete backfill prompts by branch/worktree.
-6. If a requested project id is canonicalized, say so once, for example `paus_robot_lab_host` -> `paus-robot-lab-host`.
+5. Group concrete backfill prompts and `threadPromptsByBranch` by branch/worktree.
+6. Include `recommendedActions` for untracked worktrees, stale tasks, missing validation/safety/handoff, and dirty worktrees. Each action should include both `oldThreadBackfillPrompt` and `newExecutionThreadPrompt` because the CLI cannot know whether an old execution thread exists.
+7. Include `cleanupPrompts` for active sidecar tasks whose recorded worktree no longer exists. Ask the human to confirm merged/abandoned/moved state; never auto-delete worktrees.
+8. If a requested project id is canonicalized, say so once, for example `paus_robot_lab_host` -> `paus-robot-lab-host`.
 
 Rows with `sidecarHit: false` mean no real sidecar task exists. In `audit-project`, report these rows as `taskStatus: missing`; any `provisionalTaskStatus` is audit-only fallback context and must not be described as sidecar state.
 
 Never infer that sidecar active tasks are the full worktree inventory.
+
+Prefer old execution threads for backfill when they exist, because they may still have semantic context that Git cannot recover. If no old execution thread exists, use `newExecutionThreadPrompt` to open a new Primary Execution Thread. The new thread must recover or initialize sidecar state, distinguish facts/inferences/unknowns, add validation/safety/nextStep, save a handoff, and report back to the Project Hub. The prompt should not micromanage the agent's investigation path: the agent may use code reading, commits, PRs, issues, tests, or targeted search as needed.
 
 ## Backfill Guidance
 
@@ -176,6 +180,8 @@ For a useful first sidecar state, combine:
 - Existing PR descriptions, issue text, or release notes when available.
 
 If semantic context is missing, write a provisional task state and say what is missing rather than pretending the git history is enough.
+
+`touchedFiles` means current Git dirty/touched files. It is a locator signal when context is thin, not an instruction to inspect those files first. Agents should choose their own investigation strategy and avoid full scans unless necessary.
 
 Handoffs must distinguish:
 
@@ -201,7 +207,7 @@ For single feature actions, return a short conversational summary:
 - Handoff or report path when a file was written.
 - PR URL when known, or generated PR title/body guidance when GitHub CLI is unavailable.
 
-For project hub actions, do not only return a short current-task summary. Always include compact inventory counts, a table of worktrees, and grouped backfill prompts. Avoid pasting long sidecar JSON or full weekly reports unless the user asks for detail.
+For project hub actions, do not only return a short current-task summary. Always include compact inventory counts, a table of worktrees, grouped backfill prompts, recommended actions, execution-thread prompts, and cleanup prompts. Avoid pasting long sidecar JSON or full weekly reports unless the user asks for detail.
 
 ## Advanced / Legacy Actions
 
