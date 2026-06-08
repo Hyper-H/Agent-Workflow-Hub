@@ -145,6 +145,7 @@ You are an Explainer Thread for <project>. Repo/worktree: <path>. Explain <topic
 - `finish-feature`: Finish and archive the active task. Create a PR only if the user explicitly asks and GitHub CLI is already installed and authenticated.
 - `project-status`: Return compact sidecar project state for planning. This is not the full Git worktree inventory.
 - `weekly-report`: Generate a human-facing Markdown report under the sidecar `reports/` directory and reply with a short notification, not the full report by default.
+- `eval-report`: Generate lightweight workflow evaluation Markdown and JSON reports under the sidecar `reports/` directory. It reports proxy workflow metrics, not exact token usage or proof of correctness.
 - `snapshot`: Print current worktree Git facts for lightweight backfill.
 - `draft-issue`: Generate a dogfood/debug issue draft with Facts, Inferences, Unknowns, Reproduction, Suggested Fix, and Priority. This never requires GitHub CLI.
 - `create-issue`: Create a dogfood/debug GitHub issue only when the user explicitly asks or dogfood issue mode is enabled, GitHub CLI is authenticated, content is safe, and no likely duplicate is found.
@@ -165,6 +166,7 @@ You are an Explainer Thread for <project>. Repo/worktree: <path>. Explain <topic
 - If the user reports dogfood/debug feedback, prefer `draft-issue` by default and return the copyable title/body.
 - If the user explicitly says "create issue", "提 issue", or asks to enable dogfood issue mode, use `enable-dogfood-issue-mode` or `create-issue` as appropriate. Never create an issue from inferred intent alone.
 - If the user asks from a project hub thread, asks for all worktrees, asks what is active across the project, or mentions a canonical repo with many worktrees, use `audit-project` first. Use `project-status` only for compact sidecar state and `weekly-report` for a human update.
+- If the user asks whether Agent Workflow Hub is helping, asks for dogfood/evaluation metrics, or asks for a tool-effectiveness report, run `eval-report`. Keep it distinct from `weekly-report`, which is project progress reporting.
 - If setup is uncertain, run `doctor` first. Explain any missing optional tools without installing them.
 
 ## Project Hub / Multi-Worktree Protocol

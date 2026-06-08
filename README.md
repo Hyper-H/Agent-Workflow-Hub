@@ -105,6 +105,10 @@ Use $agent-workflow-hub to draft a dogfood issue for this problem.
 Use $agent-workflow-hub to finish this feature and generate PR text.
 ```
 
+```text
+Use $agent-workflow-hub to generate this week's eval report.
+```
+
 ## Multi-Thread Workflow Playbook
 
 V2.5 treats threads as workflow roles and the sidecar as their shared state layer. This is documentation and agent guidance only: it does not add CLI actions, change the sidecar schema, or require UI/MCP support.
@@ -248,6 +252,7 @@ Base branch can be overridden with `--base-branch dev`; the value is persisted i
 - `finish-feature`: Archive the task and generate PR title/body; create a PR only when explicitly requested and GitHub CLI is ready.
 - `project-status`: Summarize compact sidecar project state. It is not the full Git worktree inventory.
 - `weekly-report`: Write a human-facing Markdown report under the sidecar `reports/` directory.
+- `eval-report`: Write lightweight workflow evaluation Markdown and JSON reports under `reports/`. This reports proxy workflow metrics, not exact token savings or proof of correctness.
 - `draft-issue`: Generate a dogfood/debug issue draft without requiring GitHub CLI.
 - `create-issue`: Create a dogfood/debug issue only when explicitly requested, safe, authenticated, and not likely duplicated.
 - `enable-dogfood-issue-mode` / `disable-dogfood-issue-mode`: Persist local sidecar permission for dogfood issue creation.
@@ -320,3 +325,5 @@ Automatic issue creation is allowed only when the user explicitly asks to create
 ## Research Notes
 
 `events.jsonl` records lightweight lifecycle events for future evaluation. It is not a full benchmark by itself. See [docs/research/agent-workflow-hub-v2-benchmark.md](./docs/research/context-handoff-v2-benchmark.md) for the planned comparison between no shared context, stable repo docs only, and sidecar + handoff.
+
+`weekly-report` is for project progress. `eval-report` is for Agent Workflow Hub effectiveness: usage counts, recovery health, routing health, coverage, and proxy efficiency metrics. It deliberately avoids exact token-saving claims.

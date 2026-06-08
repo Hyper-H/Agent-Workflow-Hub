@@ -378,6 +378,35 @@ def default_weekly_period() -> str:
     return f"{iso_year}-W{iso_week:02d}"
 
 
+def parse_datetime_filter(value: str) -> datetime | None:
+    value = (value or "").strip()
+    if not value:
+        return None
+    candidate = value
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", candidate):
+        candidate = f"{candidate}T00:00:00"
+    if candidate.endswith("Z"):
+        candidate = candidate[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except ValueError as exc:
+        raise SystemExit(f"invalid datetime filter: {value}") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.astimezone()
+    return parsed
+
+
+def datetime_in_range(value: str, since: datetime | None, until: datetime | None) -> bool:
+    timestamp = parse_datetime_filter(value)
+    if timestamp is None:
+        return False
+    if since and timestamp < since:
+        return False
+    if until and timestamp > until:
+        return False
+    return True
+
+
 def is_pr_search_url(value: str) -> bool:
     return bool(re.search(r"/pulls(?:[/?#]|$)", value.strip(), flags=re.IGNORECASE))
 
@@ -1847,6 +1876,236 @@ def build_weekly_report(manager: SidecarManager, state: dict[str, Any], period: 
     return "\n".join(lines) + "\n"
 
 
+def read_events(manager: SidecarManager, since: datetime | None = None, until: datetime | None = None) -> tuple[list[dict[str, Any]], list[str]]:
+    notes: list[str] = []
+    if not manager.events_path.exists():
+        return [], ["events.jsonl is missing; report uses current sidecar snapshot only."]
+    events: list[dict[str, Any]] = []
+    malformed = 0
+    try:
+        lines = manager.events_path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+    except OSError as exc:
+        return [], [f"events.jsonl could not be read: {short_text(str(exc), max_len=200)}"]
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            malformed += 1
+            continue
+        if not isinstance(event, dict):
+            malformed += 1
+            continue
+        if datetime_in_range(str(event.get("timestamp") or ""), since, until):
+            events.append(event)
+    if malformed:
+        notes.append(f"{malformed} malformed event line(s) were ignored.")
+    if not events:
+        notes.append("No events matched the requested period; metrics may be sparse.")
+    return events, notes
+
+
+def percent(part: int, total: int) -> float:
+    return round((part / total) * 100, 1) if total else 0.0
+
+
+def latest_numeric(events: list[dict[str, Any]], field: str) -> int | None:
+    for event in reversed(events):
+        value = event.get(field)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            return int(value)
+    return None
+
+
+def current_coverage_metrics(manager: SidecarManager, payload: dict[str, Any]) -> dict[str, Any]:
+    tasks = payload.get("tasks", [])
+    active_tasks = [task for task in tasks if task.get("status", "active") in VALID_STATUSES]
+    worktrees, worktree_error = parse_git_worktree_list(manager.git.repo_root)
+    worktree_paths = {str(Path(item.get("path", "")).resolve()) for item in worktrees if item.get("path")}
+    active_without_worktree = 0
+    tracked_worktrees = 0
+    for task in active_tasks:
+        raw_path = str(task.get("worktreePath") or "")
+        resolved = str(Path(raw_path).resolve()) if raw_path else ""
+        if raw_path and resolved in worktree_paths:
+            tracked_worktrees += 1
+        else:
+            active_without_worktree += 1
+    git_worktrees = len(worktrees)
+    untracked = max(git_worktrees - tracked_worktrees, 0)
+    return {
+        "gitWorktrees": git_worktrees,
+        "activeSidecarTasks": len(active_tasks),
+        "trackedWorktrees": tracked_worktrees,
+        "untrackedWorktrees": untracked,
+        "activeTasksWithoutWorktree": active_without_worktree,
+        "coverageSource": "current git worktree list + active-tasks.json",
+        "worktreeError": worktree_error,
+    }
+
+
+def build_eval_report_payload(
+    manager: SidecarManager,
+    period: str,
+    since_text: str,
+    until_text: str,
+) -> dict[str, Any]:
+    since = parse_datetime_filter(since_text)
+    until = parse_datetime_filter(until_text)
+    payload = manager.load_active_tasks()
+    events, notes = read_events(manager, since, until)
+    action_counts: dict[str, int] = {}
+    for event in events:
+        name = str(event.get("event") or "unknown")
+        action_counts[name] = action_counts.get(name, 0) + 1
+
+    tracked_actions = ["resume", "handoff", "audit-context", "audit-project", "finish", "resume-query", "resolve-task"]
+    usage_counts = {
+        "totalEvents": len(events),
+        "actionCounts": dict(sorted(action_counts.items())),
+        **{f"{name}Count": action_counts.get(name, 0) for name in tracked_actions},
+    }
+
+    handoff_events = [event for event in events if event.get("handoffAvailable") is not None]
+    stale_events = [event for event in events if event.get("stale") is not None]
+    validation_events = [event for event in events if event.get("validationPresent") is not None]
+    safety_events = [event for event in events if event.get("safetyRulesPresent") is not None]
+    blocked_tasks = [task for task in payload.get("tasks", []) if task.get("status") == "blocked" or task.get("blocker")]
+    recovery_metrics = {
+        "handoffAvailabilityObservations": len(handoff_events),
+        "handoffAvailableCount": sum(1 for event in handoff_events if event.get("handoffAvailable") is True),
+        "handoffMissingCount": sum(1 for event in handoff_events if event.get("handoffAvailable") is False),
+        "handoffAvailabilityRate": percent(sum(1 for event in handoff_events if event.get("handoffAvailable") is True), len(handoff_events)),
+        "staleObservations": len(stale_events),
+        "staleCount": sum(1 for event in stale_events if event.get("stale") is True),
+        "staleRate": percent(sum(1 for event in stale_events if event.get("stale") is True), len(stale_events)),
+        "missingValidationCount": sum(1 for event in validation_events if event.get("validationPresent") is False),
+        "missingSafetyRulesCount": sum(1 for event in safety_events if event.get("safetyRulesPresent") is False),
+        "blockedTaskCount": len(blocked_tasks),
+    }
+
+    routing_events = [event for event in events if event.get("event") in {"resolve-task", "resume-query"}]
+    resolved_count = sum(1 for event in routing_events if event.get("resolved") is True)
+    disambiguation_count = sum(1 for event in routing_events if event.get("needsDisambiguation") is True)
+    failed_count = sum(1 for event in routing_events if event.get("resolved") is False and not event.get("needsDisambiguation"))
+    confidences = [float(event.get("confidence")) for event in routing_events if isinstance(event.get("confidence"), (int, float))]
+    routing_metrics = {
+        "routingEventCount": len(routing_events),
+        "resolvedCount": resolved_count,
+        "disambiguationCount": disambiguation_count,
+        "failedOrNoMatchCount": failed_count,
+        "resolvedRate": percent(resolved_count, len(routing_events)),
+        "averageConfidence": round(sum(confidences) / len(confidences), 3) if confidences else 0.0,
+    }
+
+    coverage_metrics = current_coverage_metrics(manager, payload)
+    for key in ["gitWorktrees", "sidecarActiveTasks", "untrackedWorktrees", "activeTasksWithoutWorktree"]:
+        latest = latest_numeric(events, key)
+        if latest is not None:
+            coverage_metrics[f"latestEvent{key[0].upper()}{key[1:]}"] = latest
+
+    rebuild_values = [int(event.get("estimatedRebuildMinutes")) for event in events if isinstance(event.get("estimatedRebuildMinutes"), int)]
+    duplicate_reports = [event for event in events if event.get("duplicateScan") is not None]
+    first_step_reports = [event for event in events if event.get("firstStepCorrect") is not None]
+    proxy_efficiency = {
+        "estimatedRebuildMinutesReports": len(rebuild_values),
+        "estimatedRebuildMinutesTotal": sum(rebuild_values),
+        "estimatedRebuildMinutesAverage": round(sum(rebuild_values) / len(rebuild_values), 1) if rebuild_values else 0.0,
+        "duplicateScanReports": len(duplicate_reports),
+        "duplicateScanCount": sum(1 for event in duplicate_reports if event.get("duplicateScan") is True),
+        "firstStepCorrectReports": len(first_step_reports),
+        "firstStepCorrectCount": sum(1 for event in first_step_reports if event.get("firstStepCorrect") is True),
+        "firstStepCorrectRate": percent(sum(1 for event in first_step_reports if event.get("firstStepCorrect") is True), len(first_step_reports)),
+        "tokenSavingsClaimed": False,
+    }
+
+    if not rebuild_values:
+        notes.append("No estimated rebuild minutes were recorded.")
+    if not duplicate_reports:
+        notes.append("No duplicate scan self-reports were recorded.")
+    if not first_step_reports:
+        notes.append("No first-step-correct self-reports were recorded.")
+    if coverage_metrics.get("worktreeError"):
+        notes.append(f"Git worktree coverage had an error: {short_text(str(coverage_metrics['worktreeError']), max_len=200)}")
+
+    return {
+        "projectId": manager.project_id,
+        "period": period,
+        "since": since_text,
+        "until": until_text,
+        "generatedAt": now_iso(),
+        "usageCounts": usage_counts,
+        "recoveryMetrics": recovery_metrics,
+        "routingMetrics": routing_metrics,
+        "coverageMetrics": coverage_metrics,
+        "proxyEfficiencyMetrics": proxy_efficiency,
+        "dataQualityNotes": unique_nonempty(notes),
+        "reportPaths": {},
+    }
+
+
+def build_eval_report_markdown(report: dict[str, Any]) -> str:
+    usage = report["usageCounts"]
+    recovery = report["recoveryMetrics"]
+    routing = report["routingMetrics"]
+    coverage = report["coverageMetrics"]
+    efficiency = report["proxyEfficiencyMetrics"]
+    action_counts = usage.get("actionCounts", {})
+    lines = [
+        f"# Workflow Evaluation Report: {report['projectId']}",
+        "",
+        "## Summary",
+        f"- Period: {report['period']}",
+        f"- Since: {report['since'] or 'not specified'}",
+        f"- Until: {report['until'] or 'not specified'}",
+        f"- Generated At: {report['generatedAt']}",
+        "- Scope: workflow proxy metrics only; this report does not claim exact token savings or code correctness.",
+        "",
+        "## Usage",
+        f"- Total events: {usage['totalEvents']}",
+    ]
+    lines.extend([f"- {name}: {count}" for name, count in action_counts.items()] or ["- No events recorded."])
+    lines.extend(
+        [
+            "",
+            "## Recovery Health",
+            f"- Handoff availability: {recovery['handoffAvailableCount']}/{recovery['handoffAvailabilityObservations']} ({recovery['handoffAvailabilityRate']}%)",
+            f"- Stale observations: {recovery['staleCount']}/{recovery['staleObservations']} ({recovery['staleRate']}%)",
+            f"- Missing validation observations: {recovery['missingValidationCount']}",
+            f"- Missing safety rule observations: {recovery['missingSafetyRulesCount']}",
+            f"- Blocked active tasks: {recovery['blockedTaskCount']}",
+            "",
+            "## Routing Health",
+            f"- Routing events: {routing['routingEventCount']}",
+            f"- Resolved: {routing['resolvedCount']} ({routing['resolvedRate']}%)",
+            f"- Needs disambiguation: {routing['disambiguationCount']}",
+            f"- Failed/no match: {routing['failedOrNoMatchCount']}",
+            f"- Average confidence: {routing['averageConfidence']}",
+            "",
+            "## Coverage",
+            f"- Git worktrees: {coverage['gitWorktrees']}",
+            f"- Active sidecar tasks: {coverage['activeSidecarTasks']}",
+            f"- Tracked worktrees: {coverage['trackedWorktrees']}",
+            f"- Untracked worktrees: {coverage['untrackedWorktrees']}",
+            f"- Active tasks without worktree: {coverage['activeTasksWithoutWorktree']}",
+            "",
+            "## Proxy Efficiency",
+            f"- Estimated rebuild minutes reports: {efficiency['estimatedRebuildMinutesReports']}",
+            f"- Estimated rebuild minutes total: {efficiency['estimatedRebuildMinutesTotal']}",
+            f"- Duplicate scan reports/count: {efficiency['duplicateScanReports']}/{efficiency['duplicateScanCount']}",
+            f"- First-step-correct reports/count: {efficiency['firstStepCorrectReports']}/{efficiency['firstStepCorrectCount']} ({efficiency['firstStepCorrectRate']}%)",
+            "- Exact token savings claimed: no",
+            "",
+            "## Data Quality Notes",
+        ]
+    )
+    lines.extend([f"- {note}" for note in report.get("dataQualityNotes", [])] or ["- No notable data quality issues."])
+    return "\n".join(lines) + "\n"
+
+
 def normalize_query_text(value: str) -> str:
     value = value.casefold()
     value = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", " ", value)
@@ -2319,7 +2578,10 @@ def cmd_resolve_task(args: argparse.Namespace) -> int:
         handoff_available=None,
         scan_scope="sidecar-task-resolver",
         query=args.query,
+        resolved=bool(result.get("resolved")),
+        needsDisambiguation=bool(result.get("disambiguationQuestion")),
         confidence=result.get("confidence", 0.0),
+        candidateCount=len(result.get("candidates", [])),
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
@@ -2357,7 +2619,10 @@ def cmd_resume_query(args: argparse.Namespace) -> int:
             handoff_available=None,
             scan_scope="sidecar-task-resolver",
             query=args.query,
+            resolved=False,
+            needsDisambiguation=bool(resolution.get("disambiguationQuestion")),
             confidence=resolution.get("confidence", 0.0),
+            candidateCount=len(resolution.get("candidates", [])),
         )
         print(json.dumps(resolution, ensure_ascii=False, indent=2))
         return 0
@@ -2406,7 +2671,13 @@ def cmd_resume_query(args: argparse.Namespace) -> int:
         handoff_available=resume.get("handoffAvailable"),
         scan_scope="sidecar-task-resolver",
         query=args.query,
+        resolved=True,
+        needsDisambiguation=False,
         confidence=resolution.get("confidence", 0.0),
+        candidateCount=len(resolution.get("candidates", [])),
+        stale=bool((resume.get("stale") or {}).get("isStale")),
+        validationPresent=bool((task.get("validation") or {}).get("validatedAt") or (task.get("validation") or {}).get("commands") or (task.get("validation") or {}).get("results") or (task.get("validation") or {}).get("notes")),
+        safetyRulesPresent=bool(task.get("safetyRules")),
     )
     print(json.dumps(output, ensure_ascii=False, indent=2))
     return 0
@@ -2433,6 +2704,9 @@ def cmd_resume_feature(args: argparse.Namespace) -> int:
         duplicateScan=args.duplicate_scan,
         firstStepCorrect=args.first_step_correct,
         notes=args.notes or "",
+        stale=bool((snapshot.get("stale") or {}).get("isStale")),
+        validationPresent=bool((task.get("validation") or {}).get("validatedAt") or (task.get("validation") or {}).get("commands") or (task.get("validation") or {}).get("results") or (task.get("validation") or {}).get("notes")),
+        safetyRulesPresent=bool(task.get("safetyRules")),
     )
     print(json.dumps(snapshot, ensure_ascii=False, indent=2))
     return 0
@@ -2558,6 +2832,8 @@ def cmd_audit_context(args: argparse.Namespace) -> int:
         sidecar_hit=output["checks"]["sidecarHit"],
         handoff_available=output["checks"]["handoffAvailable"],
         stale=output["checks"]["stale"]["isStale"],
+        validationPresent=output["checks"]["validationPresent"],
+        safetyRulesPresent=output["checks"]["safetyRulesPresent"],
         findingCount=len(output["findings"]),
     )
     print(json.dumps(output, ensure_ascii=False, indent=2))
@@ -3011,6 +3287,53 @@ def cmd_weekly_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_eval_report(args: argparse.Namespace) -> int:
+    started_at = time.perf_counter()
+    manager = make_manager(args)
+    period = safe_filename_label(args.period or default_weekly_period(), "eval-report")
+    report_base = f"eval-{period}-{manager.project_id}"
+    json_path = manager.reports_dir / f"{report_base}.json"
+    markdown_path = manager.reports_dir / f"{report_base}.md"
+    report = build_eval_report_payload(
+        manager,
+        period,
+        args.since or "",
+        args.until or "",
+    )
+    report["reportPaths"] = {
+        "markdown": str(markdown_path),
+        "json": str(json_path),
+    }
+    with file_lock(json_path):
+        atomic_write_text(json_path, json.dumps(report, ensure_ascii=False, indent=2) + "\n")
+    with file_lock(markdown_path):
+        atomic_write_text(markdown_path, build_eval_report_markdown(report))
+    manager.log_event(
+        "eval-report",
+        started_at=started_at,
+        sidecar_hit=True,
+        handoff_available=None,
+        scan_scope="workflow-eval",
+        reportMarkdownPath=str(markdown_path),
+        reportJsonPath=str(json_path),
+    )
+    print(
+        json.dumps(
+            {
+                "projectId": manager.project_id,
+                "period": period,
+                "since": args.since or "",
+                "until": args.until or "",
+                "reportPaths": report["reportPaths"],
+                "fullReportPastedByDefault": False,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0
+
+
 def issue_output(manager: SidecarManager, args: argparse.Namespace, *, create: bool, language: str = "en") -> dict[str, Any]:
     title, body = build_issue_text(manager, args, language)
     sensitive_findings = sensitive_issue_findings(title, body)
@@ -3312,6 +3635,13 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(weekly_report_parser)
     weekly_report_parser.add_argument("--period", help="Report period label. Defaults to ISO week.")
     weekly_report_parser.set_defaults(func=cmd_weekly_report)
+
+    eval_report_parser = subparsers.add_parser("eval-report", help="Write lightweight workflow evaluation Markdown and JSON reports")
+    add_common(eval_report_parser)
+    eval_report_parser.add_argument("--period", help="Report period label. Defaults to ISO week.")
+    eval_report_parser.add_argument("--since", help="Include events at or after this date/datetime.")
+    eval_report_parser.add_argument("--until", help="Include events at or before this date/datetime.")
+    eval_report_parser.set_defaults(func=cmd_eval_report)
 
     draft_issue_parser = subparsers.add_parser("draft-issue", help="Generate a dogfood issue draft without requiring gh")
     add_common(draft_issue_parser)
