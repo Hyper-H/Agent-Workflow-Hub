@@ -6,24 +6,25 @@ import shutil
 from pathlib import Path
 
 
-SKILL_NAME = "context-handoff"
+SKILL_NAMES = ["agent-workflow-hub", "context-handoff"]
 
 
 def default_codex_home() -> Path:
     return Path.home() / ".codex"
 
 
-def copy_skill(source: Path, destination: Path, dry_run: bool) -> None:
+def copy_skill(skill_name: str, source: Path, destination: Path, dry_run: bool) -> None:
     if not source.exists():
         raise SystemExit(f"skill source not found: {source}")
     if not (source / "SKILL.md").exists():
         raise SystemExit(f"skill source is missing SKILL.md: {source}")
 
-    print(f"Installing {SKILL_NAME} skill")
+    print(f"Installing {skill_name} skill")
     print(f"Source: {source}")
     print(f"Target: {destination}")
     if dry_run:
         print("Dry run only; no files were changed.")
+        print("")
         return
 
     if destination.exists():
@@ -37,13 +38,12 @@ def copy_skill(source: Path, destination: Path, dry_run: bool) -> None:
     )
 
     print("")
-    print("Installed successfully.")
-    print("Restart or refresh Codex if the skill list does not update immediately.")
-    print("GitHub CLI is optional; run `Use $context-handoff to run doctor for this project.` to check readiness.")
+    print(f"Installed {skill_name} successfully.")
+    print("")
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Install the context-handoff Codex skill package.")
+    parser = argparse.ArgumentParser(description="Install the Agent Workflow Hub and context-handoff Codex skill packages.")
     parser.add_argument(
         "--codex-home",
         default=str(default_codex_home()),
@@ -60,9 +60,15 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
     repo_root = Path(__file__).resolve().parent
-    source = repo_root / "skills" / SKILL_NAME
-    destination = Path(args.codex_home).expanduser().resolve() / "skills" / SKILL_NAME
-    copy_skill(source, destination, args.dry_run)
+    codex_home = Path(args.codex_home).expanduser().resolve()
+    for skill_name in SKILL_NAMES:
+        source = repo_root / "skills" / skill_name
+        destination = codex_home / "skills" / skill_name
+        copy_skill(skill_name, source, destination, args.dry_run)
+    if not args.dry_run:
+        print("Installed successfully.")
+        print("Restart or refresh Codex if the skill list does not update immediately.")
+        print("GitHub CLI is optional; run `Use $agent-workflow-hub to run doctor for this project.` to check readiness.")
     return 0
 
 
