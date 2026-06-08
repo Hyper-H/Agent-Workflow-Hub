@@ -31,6 +31,8 @@ The sidecar stays local at:
 
 Do not write dynamic task state into tracked repo docs. Do not require MCP for this workflow.
 
+Use the sidecar as workflow state, not as a memory replacement. It records auditable task/worktree/handoff/validation/safety state, not chat transcripts, long logs, or model reasoning.
+
 For multi-worktree projects, keep one stable project identity. The CLI resolves projectId in this order: `--project-id`, `CONTEXT_HANDOFF_PROJECT_ID`, existing local sidecar `config.json`, Git remote/common-dir, then repo root name fallback. Use `--project-id` only when the inferred identity would be wrong. Use `--base-branch dev` when the feature base branch is not the inferred default; it persists in sidecar config.
 
 ## Language Behavior
@@ -57,6 +59,7 @@ This compatibility entrypoint supports the same V2.8 routing actions as `$agent-
 - Use `resume-query --query "<user phrase>"` when the user says "continue <nickname>" and you have any known project/worktree path.
 - Use `resolve-task --query "<user phrase>"` when routing without resuming.
 - If `resolved: false`, ask the returned `disambiguationQuestion` once instead of guessing.
+- `resume-feature` and `resume-query` restore recorded workflow state; they do not prove correctness or replace validation, PR review, or targeted investigation.
 - Persist only user-confirmed aliases with `start-feature --alias`, `handoff --alias`, or `alias-task --alias`. Generated aliases participate in matching but are not written to task `aliases`.
 - The resolver is local and deterministic: normalized strings, token overlap, and `difflib`; no LLMs, embeddings, vectors, UI, MCP, or thread API.
 

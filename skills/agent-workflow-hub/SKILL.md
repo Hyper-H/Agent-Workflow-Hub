@@ -29,6 +29,8 @@ The sidecar stays local at:
 
 Do not write dynamic task state into tracked repo docs. Do not require MCP for this workflow.
 
+Use the sidecar as workflow state, not as a memory replacement. It records auditable task/worktree/handoff/validation/safety state; it should not store chat transcripts, long logs, or model reasoning.
+
 For multi-worktree projects, keep one stable project identity. The CLI resolves projectId in this order: `--project-id`, `CONTEXT_HANDOFF_PROJECT_ID`, existing local sidecar `config.json`, Git remote/common-dir, then repo root name fallback. Use `--project-id` only when the inferred identity would be wrong. Use `--base-branch dev` when the feature base branch is not the inferred default; it persists in sidecar config.
 
 ## Language Behavior
@@ -56,7 +58,8 @@ Use `resolve-task` and `resume-query` when the user names a task informally inst
 - Use `resolve-task --query "<user phrase>"` when you only need to route, inspect candidates, or decide which execution thread/worktree should receive the next prompt.
 - If `resolved: true`, continue from the returned `cd` / `worktreePath` and summarize the compact resume fields instead of pasting full JSON.
 - If `resolved: false`, ask the returned `disambiguationQuestion` as one short question. Do not guess between close candidates.
-- `resume-query` is sidecar-first, git-aware, and scan-minimal. It restores recorded workflow state; it does not prove the code is correct or replace tests, PR review, or the agent's own investigation.
+- `resume-query` is sidecar-first, git-aware, and scan-minimal.
+- `resume-feature` and `resume-query` restore recorded workflow state; they do not prove correctness or replace validation, PR review, or targeted investigation.
 - The resolver is deterministic and local: aliases, taskId, branch, worktree basename, goal, handoff summary, and touchedAreas are matched with normalized strings, token overlap, and `difflib`. It does not use LLMs, embeddings, vectors, UI, MCP, or thread APIs.
 - `touchedAreas` and `touchedFiles` are evidence/locator signals, not a required first scan path.
 

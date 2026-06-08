@@ -2,7 +2,9 @@
 
 [中文](./README.zh-CN.md) | English
 
-Agent-native development workflow layer for Codex worktrees. Agent Workflow Hub helps Codex coordinate project hubs, execution threads, worktrees, tasks, handoffs, validation, safety rules, and recommended actions through a local sidecar. Reduced repeat scanning and lower context rebuild cost are benefits, not the core product contract.
+Agent-native development workflow layer for Codex worktrees. Agent Workflow Hub helps Codex coordinate project hubs, execution threads, worktrees, tasks, handoffs, validation, safety rules, and recommended actions through a local sidecar.
+
+Agent Workflow Hub is a workflow state layer, not a replacement for native model memory or context windows. Even as Codex, Claude Code, Cursor, Windsurf, and other agents improve their built-in memory, multi-worktree development still benefits from an explicit, auditable protocol for what task is active, what was validated, what is stale, what is unknown, and which thread should act next. Reduced repeat scanning and lower context rebuild cost are benefits, not the product contract.
 
 The normal interface is conversation:
 
@@ -17,9 +19,25 @@ The primary skill bundles its own Python sidecar CLI under `skills/agent-workflo
 
 `$agent-workflow-hub` is the default entrypoint from V2.7 onward. `$context-handoff` remains available as a legacy compatibility entrypoint and uses the same local sidecar data, CLI file name, and JSON schema. Existing state under `%USERPROFILE%\.codex\projects\<project-id>\` is not migrated.
 
+## Positioning
+
+### Why This Exists If Agents Already Have Memory/Context
+
+Native agent memory is good at remembering preferences, recent conversations, and broad context. Agent Workflow Hub focuses on explicit project workflow state: task identity, worktree mapping, handoff facts, inferences, unknowns, validation, safety rules, stale detection, and hub-level recommended actions.
+
+### What It Does Not Replace
+
+It does not replace code understanding, tests, PR review, issue tracking, project management tools, or the agent's own investigation. `resume-feature` and `resume-query` restore recorded workflow state; they do not prove correctness.
+
+### Where It Remains Useful As Agents Improve
+
+It remains useful when work spans multiple worktrees, multiple execution threads, multiple agents, or long-running branches where state must be visible, inspectable, and independent of any one chat transcript. The sidecar is auditable project state, not a chat log or model reasoning store.
+
+For the long-form product framing, see [docs/product/workflow-value-positioning.md](./docs/product/workflow-value-positioning.md).
+
 ## What It Solves
 
-- New agent threads repeatedly scan the same repository.
+- New execution threads need explicit task/worktree routing.
 - Feature branches, worktrees, and threads lose task status.
 - Multi-worktree projects get split into unrelated local project IDs.
 - Handoff, finish/archive, audit, and weekly reporting become inconsistent.
