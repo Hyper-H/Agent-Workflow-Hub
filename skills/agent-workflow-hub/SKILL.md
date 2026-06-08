@@ -1,13 +1,11 @@
 ---
-name: context-handoff
-description: Conversation-first local project context layer for Codex worktrees using the context sidecar CLI.
+name: agent-workflow-hub
+description: Agent-native development workflow layer for Codex worktrees using the compatible context sidecar CLI.
 ---
 
-# Context Handoff
+# Agent Workflow Hub
 
-> Legacy compatibility entrypoint: `$context-handoff` remains supported, but new projects and docs should prefer `$agent-workflow-hub` from V2.7 onward. This package uses the same local sidecar data and compatible CLI.
-
-Use this skill when the user wants to start, resume, hand off, finish, inspect, audit project hub state, or report on feature work for the current repository. Keep normal interaction conversational. The Python sidecar CLI is the implementation layer, not the primary user experience.
+Use this skill when the user wants to coordinate Codex multi-worktree, multi-thread, or multi-agent development for the current repository. Keep normal interaction conversational. The Python sidecar CLI is the implementation layer, not the primary user experience.
 
 ## Implementation Layer
 
@@ -21,7 +19,7 @@ python scripts\context_sidecar.py <action> --worktree <current-worktree>
 
 If the current working directory is the installed skill directory, use the relative script path above. If running from another directory, resolve `scripts\context_sidecar.py` relative to this `SKILL.md` file and pass the user's current repository or worktree through `--worktree`.
 
-The user can still say `Use $context-handoff ...` for compatibility, but prefer `Use $agent-workflow-hub ...` for new work. CLI path resolution is the agent's responsibility.
+The user should only need to say `Use $agent-workflow-hub ...`; CLI path resolution is the agent's responsibility. `$context-handoff` remains a legacy compatibility entrypoint.
 
 The sidecar stays local at:
 

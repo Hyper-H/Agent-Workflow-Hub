@@ -1,16 +1,21 @@
-# context-handoff
+# Agent Workflow Hub
 
 [中文](./README.zh-CN.md) | English
 
-`context-handoff` is a self-contained local project context layer for Codex worktrees. It helps agents resume feature work, audit project hub state, and coordinate branches, worktrees, and threads without repeatedly rebuilding the same project context.
+Agent-native development workflow layer for Codex worktrees. Agent Workflow Hub helps Codex coordinate multi-worktree, multi-thread, and multi-agent development through a local sidecar without repeatedly rebuilding project context.
 
 The normal interface is conversation:
 
 ```text
-Use $context-handoff to resume this worktree.
+Use $agent-workflow-hub to resume this worktree.
 ```
 
-The skill bundles its own Python sidecar CLI under `skills/context-handoff/scripts/`, so users do not need to know where the CLI lives.
+The primary skill bundles its own Python sidecar CLI under `skills/agent-workflow-hub/scripts/`, so users do not need to know where the CLI lives. The compatibility skill under `skills/context-handoff/` uses the same CLI and sidecar data.
+
+
+## Compatibility
+
+`$agent-workflow-hub` is the default entrypoint from V2.7 onward. `$context-handoff` remains available as a legacy compatibility entrypoint and uses the same local sidecar data, CLI file name, and JSON schema. Existing state under `%USERPROFILE%\.codex\projects\<project-id>\` is not migrated.
 
 ## What It Solves
 
@@ -29,52 +34,53 @@ Clone this repository, then run:
 python install.py
 ```
 
-This copies the complete skill package to:
+This copies both complete skill packages to:
 
 ```text
+%USERPROFILE%\.codex\skills\agent-workflow-hub\
 %USERPROFILE%\.codex\skills\context-handoff\
 ```
 
 Restart or refresh Codex if the skill list does not update immediately.
 
-The installer only copies the skill package. It does not install GitHub CLI, authenticate accounts, or change global Codex configuration.
+The installer only copies the skill packages. It does not install GitHub CLI, authenticate accounts, or change global Codex configuration.
 
 ## Use
 
 In any git project or worktree, ask Codex:
 
 ```text
-Use $context-handoff to run doctor/setup for this project.
+Use $agent-workflow-hub to run doctor/setup for this project.
 ```
 
 Then use natural prompts:
 
 ```text
-Use $context-handoff to start this feature. Goal: improve the dashboard UI.
+Use $agent-workflow-hub to start this feature. Goal: improve the dashboard UI.
 ```
 
 ```text
-Use $context-handoff to resume this worktree and tell me the immediate next step.
+Use $agent-workflow-hub to resume this worktree and tell me the immediate next step.
 ```
 
 ```text
-Use $context-handoff to save a handoff before I stop today.
+Use $agent-workflow-hub to save a handoff before I stop today.
 ```
 
 ```text
-Use $context-handoff to audit this context before another agent takes over.
+Use $agent-workflow-hub to audit this context before another agent takes over.
 ```
 
 ```text
-Use $context-handoff to audit this project hub across all worktrees.
+Use $agent-workflow-hub to audit this project hub across all worktrees.
 ```
 
 ```text
-Use $context-handoff to draft a dogfood issue for this problem.
+Use $agent-workflow-hub to draft a dogfood issue for this problem.
 ```
 
 ```text
-Use $context-handoff to finish this feature and generate PR text.
+Use $agent-workflow-hub to finish this feature and generate PR text.
 ```
 
 ## Multi-Thread Workflow Playbook
@@ -118,25 +124,25 @@ Recommended prompt templates:
 New execution thread:
 
 ```text
-You are the Primary Execution Thread for <project>/<task>. Repo/worktree: <path>. Use $context-handoff first: run resume-feature if a task already exists, otherwise start-feature with this goal: <goal>. Plan briefly inside this thread, then implement. Keep dynamic state in sidecar/handoffs, not tracked repo docs. Before stopping, run the relevant validation, audit-context if useful, and save a handoff with facts, inferences, unknowns, safety rules, validation, blockers, and next step.
+You are the Primary Execution Thread for <project>/<task>. Repo/worktree: <path>. Use $agent-workflow-hub first: run resume-feature if a task already exists, otherwise start-feature with this goal: <goal>. Plan briefly inside this thread, then implement. Keep dynamic state in sidecar/handoffs, not tracked repo docs. Before stopping, run the relevant validation, audit-context if useful, and save a handoff with facts, inferences, unknowns, safety rules, validation, blockers, and next step.
 ```
 
 Execution thread completion handoff:
 
 ```text
-Task complete for <project>/<task>. Please update $context-handoff: run audit-context, then finish-feature or handoff as appropriate. Report back to the Project Hub with: branch, worktree, summary of changes, validation commands/results, PR URL or generated PR title/body, remaining risks, sidecar handoff/archive path, and whether the worktree is clean.
+Task complete for <project>/<task>. Please update $agent-workflow-hub: run audit-context, then finish-feature or handoff as appropriate. Report back to the Project Hub with: branch, worktree, summary of changes, validation commands/results, PR URL or generated PR title/body, remaining risks, sidecar handoff/archive path, and whether the worktree is clean.
 ```
 
 Dogfood feedback:
 
 ```text
-This is a Dogfood/QA Thread for <project>. Feedback: <observed behavior>. Expected: <expected behavior>. Repo/worktree if known: <path>. Use $context-handoff to draft a dogfood issue. Keep Facts, Inferences, Unknowns, Reproduction, Suggested Fix, and Priority separate. Do not create a GitHub issue unless I explicitly ask or dogfood issue mode is enabled.
+This is a Dogfood/QA Thread for <project>. Feedback: <observed behavior>. Expected: <expected behavior>. Repo/worktree if known: <path>. Use $agent-workflow-hub to draft a dogfood issue. Keep Facts, Inferences, Unknowns, Reproduction, Suggested Fix, and Priority separate. Do not create a GitHub issue unless I explicitly ask or dogfood issue mode is enabled.
 ```
 
 Project hub migration:
 
 ```text
-You are the Project Hub Thread for <project>. Canonical repo/worktree: <path>. Use $context-handoff to run audit-project with the expected project id/base branch. Build the hub view from real git worktrees plus sidecar active tasks. Summarize active execution threads, missing sidecar coverage, stale handoffs, validation gaps, and concrete backfill prompts. Do not treat project-status as the full inventory.
+You are the Project Hub Thread for <project>. Canonical repo/worktree: <path>. Use $agent-workflow-hub to run audit-project with the expected project id/base branch. Build the hub view from real git worktrees plus sidecar active tasks. Summarize active execution threads, missing sidecar coverage, stale handoffs, validation gaps, and concrete backfill prompts. Do not treat project-status as the full inventory.
 ```
 
 Explainer thread:
@@ -154,7 +160,7 @@ Default output is English. For one command, agents can pass `--language zh-CN` o
 To persist a local preference in sidecar config:
 
 ```text
-Use $context-handoff to set human-facing output language to zh-CN.
+Use $agent-workflow-hub to set human-facing output language to zh-CN.
 ```
 
 This writes `preferredLanguage` only under `%USERPROFILE%\.codex\projects\<project-id>\config.json` and does not mutate the target repository.
@@ -204,14 +210,14 @@ Base branch can be overridden with `--base-branch dev`; the value is persisted i
 - `set-language`: Persist local sidecar language preference for human-facing output.
 - `snapshot`: Print current worktree Git facts for lightweight backfill.
 
-V1 `worktree-intake` and `worktree-handoff` have been merged into the unified `context-handoff` skill as `resume-feature` and `handoff`.
+V1 `worktree-intake` and `worktree-handoff` have been merged into Agent Workflow Hub as `resume-feature` and `handoff`. The old `$context-handoff` entrypoint remains a compatibility alias.
 
 ## Project Hub Inventory
 
 `project-status` reports sidecar-known active tasks. It does not enumerate every Git worktree. For project hub threads or multi-worktree status, use:
 
 ```text
-Use $context-handoff to audit this project hub across all worktrees. Project id: my_project. Base branch: dev.
+Use $agent-workflow-hub to audit this project hub across all worktrees. Project id: my_project. Base branch: dev.
 ```
 
 The skill runs `audit-project`, which uses `git worktree list --porcelain`, audits every worktree, and returns:
@@ -269,4 +275,4 @@ Automatic issue creation is allowed only when the user explicitly asks to create
 
 ## Research Notes
 
-`events.jsonl` records lightweight lifecycle events for future evaluation. It is not a full benchmark by itself. See [docs/research/context-handoff-v2-benchmark.md](./docs/research/context-handoff-v2-benchmark.md) for the planned comparison between no shared context, stable repo docs only, and sidecar + handoff.
+`events.jsonl` records lightweight lifecycle events for future evaluation. It is not a full benchmark by itself. See [docs/research/agent-workflow-hub-v2-benchmark.md](./docs/research/context-handoff-v2-benchmark.md) for the planned comparison between no shared context, stable repo docs only, and sidecar + handoff.
