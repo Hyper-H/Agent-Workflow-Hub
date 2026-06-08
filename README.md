@@ -2,7 +2,7 @@
 
 [中文](./README.zh-CN.md) | English
 
-Agent-native development workflow layer for Codex worktrees. Agent Workflow Hub helps Codex coordinate multi-worktree, multi-thread, and multi-agent development through a local sidecar without repeatedly rebuilding project context.
+Agent-native development workflow layer for Codex worktrees. Agent Workflow Hub helps Codex coordinate project hubs, execution threads, worktrees, tasks, handoffs, validation, safety rules, and recommended actions through a local sidecar. Reduced repeat scanning and lower context rebuild cost are benefits, not the core product contract.
 
 The normal interface is conversation:
 
@@ -61,6 +61,10 @@ Use $agent-workflow-hub to start this feature. Goal: improve the dashboard UI.
 
 ```text
 Use $agent-workflow-hub to resume this worktree and tell me the immediate next step.
+```
+
+```text
+Use $agent-workflow-hub to continue markerless clean.
 ```
 
 ```text
@@ -165,6 +169,25 @@ Use $agent-workflow-hub to set human-facing output language to zh-CN.
 
 This writes `preferredLanguage` only under `%USERPROFILE%\.codex\projects\<project-id>\config.json` and does not mutate the target repository.
 
+## Natural-Language Routing
+
+V2.8 adds deterministic task routing for project hubs and execution threads. When the user says something like `continue markerless clean`, agents should use `resume-query --query "markerless clean"` or `resolve-task --query "markerless clean"` with a known project/worktree path.
+
+This routing layer is sidecar-first, git-aware, and scan-minimal. It restores the last recorded workflow state for the resolved task; it does not prove code correctness, replace tests, or replace PR review. Agents still choose their own investigation strategy and may use sidecar state, handoffs, Git facts, touched files, recent commits, PRs, issues, tests, or targeted search as needed.
+
+Resolution uses local deterministic matching only: normalized strings, token overlap, and `difflib`. It does not use an LLM, embeddings, a vector database, UI, MCP, or any thread API.
+
+Task aliases are supported:
+
+- `start-feature --alias "markerless clean"` and `handoff --alias "markerless clean"` persist user-confirmed aliases on the task.
+- `alias-task --alias "markerless clean"` adds an alias to the current or selected task.
+- `alias-task --remove-alias "markerless clean"` removes an alias.
+- Generated aliases from branch, task id, worktree name, goal, touched areas, and handoff summary participate in matching but are not persisted.
+
+`resolve-task` returns short JSON with `resolved`, `confidence`, `taskId`, `branch`, `worktreePath`, `matchedFields`, `candidates`, and `disambiguationQuestion`. High-confidence matches can be resumed automatically by `resume-query`; low-confidence or close candidates return one question instead of guessing.
+
+Project discovery records `canonicalRepoRoot`, `projectContainerRoots`, and `knownWorktreeRoots` in local sidecar config. This lets a hub thread route from a non-Git container directory to a known project when there is a single clear match. If multiple projects match, the CLI returns candidates and asks for disambiguation.
+
 ## Sidecar State
 
 Dynamic state is local-only and stays outside your repository:
@@ -197,7 +220,10 @@ Base branch can be overridden with `--base-branch dev`; the value is persisted i
 - `doctor`: Check Python, Git, sidecar, and optional GitHub CLI readiness.
 - `setup`: Create the local sidecar layout.
 - `start-feature`: Track the current branch/worktree as an active task.
+- `alias-task`: Add or remove human-friendly task aliases.
+- `resolve-task`: Resolve a natural-language query to a sidecar task without resuming.
 - `resume-feature`: Recover compact context, stale detection, and a `startThreadSummary`.
+- `resume-query`: Resolve a natural-language query, then run sidecar-first resume on the matched worktree when confidence is high.
 - `handoff`: Save incomplete work, next step, facts, inferences, unknowns, validation, and safety rules.
 - `audit-context`: Report missing handoff, stale git state, missing validation, missing safety rules, dirty worktree, and backfill prompts.
 - `audit-project`: Audit all Git worktrees for a project hub inventory, compare real worktrees with sidecar active tasks, and generate branch-level backfill prompts, recommended actions, execution-thread prompts, and cleanup prompts.

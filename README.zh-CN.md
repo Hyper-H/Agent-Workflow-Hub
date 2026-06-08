@@ -1,4 +1,4 @@
-# Agent Workflow Hub
+﻿# Agent Workflow Hub
 
 中文 | [English](./README.md)
 
@@ -165,8 +165,21 @@ Use $agent-workflow-hub to set human-facing output language to zh-CN.
 
 这只会把 `preferredLanguage` 写到 `%USERPROFILE%\.codex\projects\<project-id>\config.json`，不会修改目标项目仓库。
 
-## Sidecar 状态
+## 自然语言任务路由
 
+V2.8 增加确定性的自然语言 task routing。用户只说 `continue markerless clean` 时，agent 可以用 `resume-query --query "markerless clean"` 或 `resolve-task --query "markerless clean"`，从本地 sidecar 解析到正确 task/worktree，再执行 sidecar-first resume。
+
+这不是替代 agent 的代码理解、测试或 PR review。它只是一个稳定、可审计、低摩擦的 workflow routing layer：恢复最近记录的 workflow state，并给出 branch、worktree、HEAD、dirty status、nextStep、blocker、validation、safetyRules 和 startThreadSummary。
+
+解析完全本地确定性执行：字符串归一化、token overlap 和 `difflib`，不使用 LLM、embedding、向量库、UI、MCP 或 thread API。高置信时 `resume-query` 自动 resume；低置信或多个候选相近时只返回候选和一句消歧问题，不猜。
+
+Task alias 支持：
+
+- `start-feature --alias "markerless clean"` 和 `handoff --alias "markerless clean"` 会持久化用户确认过的 alias。
+- `alias-task --alias "markerless clean"` 添加 alias。
+- `alias-task --remove-alias "markerless clean"` 删除 alias。
+- 程序生成的 alias 会参与匹配，但不会污染 task 的持久化 `aliases`。
+## Sidecar 状态
 动态状态只保存在本机，不进入目标仓库：
 
 ```text

@@ -48,6 +48,30 @@ Use $agent-workflow-hub to generate this week's report in Chinese.
 Use $agent-workflow-hub to save a handoff in Chinese.
 ```
 
+## Natural-Language Task Routing
+
+Use `resolve-task` and `resume-query` when the user names a task informally instead of naming the current worktree, for example "continue markerless clean" or "resume the onboarding fix".
+
+- Prefer `resume-query --query "<user phrase>"` when the user clearly wants to continue work and you have any known project/worktree path.
+- Use `resolve-task --query "<user phrase>"` when you only need to route, inspect candidates, or decide which execution thread/worktree should receive the next prompt.
+- If `resolved: true`, continue from the returned `cd` / `worktreePath` and summarize the compact resume fields instead of pasting full JSON.
+- If `resolved: false`, ask the returned `disambiguationQuestion` as one short question. Do not guess between close candidates.
+- `resume-query` is sidecar-first, git-aware, and scan-minimal. It restores recorded workflow state; it does not prove the code is correct or replace tests, PR review, or the agent's own investigation.
+- The resolver is deterministic and local: aliases, taskId, branch, worktree basename, goal, handoff summary, and touchedAreas are matched with normalized strings, token overlap, and `difflib`. It does not use LLMs, embeddings, vectors, UI, MCP, or thread APIs.
+- `touchedAreas` and `touchedFiles` are evidence/locator signals, not a required first scan path.
+
+Task aliases:
+
+- Pass `--alias` to `start-feature` or `handoff` when the user confirms a useful nickname.
+- Use `alias-task --alias "<alias>"` to add a nickname to an existing task, and `alias-task --remove-alias "<alias>"` to remove one.
+- Persist only user-confirmed aliases. Generated aliases participate in matching but are not written back to task `aliases`.
+
+Project/container routing:
+
+- `resume-query` may be called from a known worktree, canonical repo, or non-Git project container path.
+- If one known project matches the container, the CLI routes to that project's latest known worktree/canonical root.
+- If multiple projects match, ask the returned disambiguation question once.
+
 ## Multi-Thread Workflow Playbook
 
 Use this playbook when the user asks whether to open a new thread, worktree, subagent, side chat, or project hub. The goal is stable routing, not new infrastructure. Do not add CLI actions, change sidecar schema, or require UI/MCP support for these workflows.
@@ -120,7 +144,10 @@ You are an Explainer Thread for <project>. Repo/worktree: <path>. Explain <topic
 ## Actions
 
 - `start-feature`: Create or update the active task for the current branch/worktree. Use when the user starts a new feature or says what this branch is for.
+- `alias-task`: Add or remove user-confirmed task aliases. Use when a user names a durable nickname for a task.
+- `resolve-task`: Resolve a natural-language query to a sidecar task. Use when routing without resuming.
 - `resume-feature`: Recover compact task state, latest handoff availability, stable docs, git status, and next-step hints. Use when taking over or continuing a branch.
+- `resume-query`: Resolve a natural-language query and resume the matched worktree when confidence is high. Use when the user says "continue <nickname>".
 - `handoff`: Save incomplete work, next step, blockers, touched areas, facts, inferences, unknowns, validation commands/results/time, safety rules, and a concise thread summary.
 - `audit-context`: Check whether the current context is trustworthy before handoff/resume. It reports missing handoff, stale HEAD/dirty files, missing validation, missing safety rules, dirty worktree, and backfill prompts.
 - `audit-project`: Project hub inventory for all Git worktrees. It compares real `git worktree list` output with sidecar active tasks, audits every worktree, and reports untracked worktrees, stale tasks, missing validation/safety/handoff, recommended actions, execution-thread prompts, and cleanup prompts.
@@ -139,6 +166,7 @@ You are an Explainer Thread for <project>. Repo/worktree: <path>. Explain <topic
 
 - Before the first action in a project, run the bundled CLI with the current worktree path. Prefer `doctor` before `setup` when the project has not used the sidecar before.
 - If the user says "start this feature", "track this branch", or gives a feature goal, run `start-feature` with `--goal` and optional `--next-step`.
+- If the user says "continue <task nickname>" from a hub or container context, run `resume-query --query "<task nickname>"` and follow its confidence/disambiguation output.
 - If the user says "take over", "resume", "where are we", or "continue this worktree", run `resume-feature`, then summarize only the useful context and next step.
 - If the user asks to audit trustworthiness, run `audit-context` and summarize findings plus backfill prompts.
 - If the user is ending a session or passing work to another agent, run `handoff` with concrete done/not-done fields and explicit `--fact`, `--inference`, `--unknown`, `--safety-rule`, `--validation-command`, `--validation-result`, and `--validation-at` values where known.
