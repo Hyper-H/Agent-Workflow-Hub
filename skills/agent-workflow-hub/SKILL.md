@@ -21,6 +21,8 @@ If the current working directory is the installed skill directory, use the relat
 
 The user should only need to say `Use $agent-workflow-hub ...`; CLI path resolution is the agent's responsibility. `$context-handoff` remains a legacy compatibility entrypoint.
 
+If the user asks to update, repair, reinstall, inspect, or debug this skill, first read `references/maintenance.md`. The installed skill directory is not the canonical source repo.
+
 The sidecar stays local at:
 
 ```text
@@ -55,6 +57,8 @@ Use $agent-workflow-hub to save a handoff in Chinese.
 Use `resolve-task` and `resume-query` when the user names a task informally instead of naming the current worktree, for example "continue markerless clean" or "resume the onboarding fix".
 
 - Prefer `resume-query --query "<user phrase>"` when the user clearly wants to continue work and you have any known project/worktree path.
+- Chinese/natural-language takeover phrases such as `接手 <task>`, `继续 <task>`, `恢复 <task>`, `你是 <task> 的执行进程`, and `作为 <task> execution thread` must route to `resume-query --query "<task>"` first.
+- Use `resume-feature` only when the user explicitly says `当前 worktree`, `this worktree`, or otherwise clearly means the already-selected Git worktree.
 - Use `resolve-task --query "<user phrase>"` when you only need to route, inspect candidates, or decide which execution thread/worktree should receive the next prompt.
 - If `resolved: true`, continue from the returned `cd` / `worktreePath` and summarize the compact resume fields instead of pasting full JSON.
 - If `resolved: false`, ask the returned `disambiguationQuestion` as one short question. Do not guess between close candidates.

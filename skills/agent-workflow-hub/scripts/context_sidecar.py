@@ -605,6 +605,8 @@ def run_git(args: list[str], cwd: Path) -> tuple[int, str, str]:
         )
     except FileNotFoundError:
         return 127, "", "git executable not found"
+    except OSError as exc:
+        return 1, "", str(exc)
     return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
 
 
@@ -620,6 +622,8 @@ def run_git_bytes(args: list[str], cwd: Path) -> tuple[int, bytes, bytes]:
         )
     except FileNotFoundError:
         return 127, b"", b"git executable not found"
+    except OSError as exc:
+        return 1, b"", str(exc).encode("utf-8", errors="replace")
     return proc.returncode, proc.stdout, proc.stderr
 
 
@@ -773,6 +777,7 @@ def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
 @dataclass
 class GitContext:
     repo_root: Path
+    is_git_worktree: bool
     branch: str
     base_branch: str
     worktree_path: Path
@@ -879,6 +884,7 @@ class SidecarManager:
 
     def _detect_git_context(self) -> GitContext:
         rc, repo_root, _ = run_git(["rev-parse", "--show-toplevel"], self.worktree)
+        is_git_worktree = bool(rc == 0 and repo_root)
         if rc != 0 or not repo_root:
             repo_root = str(self.worktree)
         repo_root_path = Path(repo_root).resolve()
@@ -925,6 +931,7 @@ class SidecarManager:
 
         return GitContext(
             repo_root=repo_root_path,
+            is_git_worktree=is_git_worktree,
             branch=branch,
             base_branch=base_branch,
             worktree_path=self.worktree,
@@ -1100,6 +1107,7 @@ class SidecarManager:
             "currentBranch": self.git.branch,
             "baseBranch": self.git.base_branch,
             "currentWorktree": str(self.git.worktree_path),
+            "isGitWorktree": self.git.is_git_worktree,
             "headSha": self.git.head_sha,
             "upstream": self.git.upstream,
             "dirtyFiles": self.git.dirty_files,
@@ -2293,21 +2301,55 @@ def find_project_configs_for_path(path: Path) -> list[dict[str, Any]]:
                     "configPath": str(config_path),
                     "canonicalRepoRoot": payload.get("canonicalRepoRoot") or payload.get("repoRoot") or "",
                     "currentWorktreePath": payload.get("currentWorktreePath") or payload.get("lastWorktreePath") or "",
+                    "knownWorktreeRoots": payload.get("knownWorktreeRoots") or [],
                     "matchedRoot": matched_root,
                 }
             )
     return matches
 
 
+def find_project_config_by_id(project_id: str) -> list[dict[str, Any]]:
+    slug = slugify(project_id)
+    config_path = Path.home() / ".codex" / "projects" / slug / "config.json"
+    payload = read_json(config_path, {})
+    if not payload:
+        return []
+    return [
+        {
+            "projectId": payload.get("projectId") or slug,
+            "configPath": str(config_path),
+            "canonicalRepoRoot": payload.get("canonicalRepoRoot") or payload.get("repoRoot") or "",
+            "currentWorktreePath": payload.get("currentWorktreePath") or payload.get("lastWorktreePath") or "",
+            "knownWorktreeRoots": payload.get("knownWorktreeRoots") or [],
+            "matchedRoot": "project-id",
+        }
+    ]
+
+
+def best_worktree_path_from_project_match(match: dict[str, Any], fallback: Path) -> str:
+    candidates: list[str] = []
+    candidates.extend(str(item) for item in match.get("knownWorktreeRoots") or [])
+    for key in ["currentWorktreePath", "canonicalRepoRoot"]:
+        if match.get(key):
+            candidates.append(str(match[key]))
+    candidates = unique_normalized_nonempty(candidates)
+    for candidate in candidates:
+        ok, _ = detect_git_repo(Path(candidate))
+        if ok:
+            return candidate
+    return candidates[0] if candidates else str(fallback)
+
+
 def make_manager_for_query(args: argparse.Namespace, language: str = "en") -> tuple[SidecarManager | None, dict[str, Any]]:
     worktree = Path(getattr(args, "worktree", None) or os.getcwd())
     ok, _ = detect_git_repo(worktree)
-    if ok or getattr(args, "project_id", ""):
+    explicit_project_id = getattr(args, "project_id", "") or ""
+    if ok:
         manager = make_manager(args)
         return manager, {"resolvedProject": True, "projectCandidates": []}
-    matches = find_project_configs_for_path(worktree)
+    matches = find_project_config_by_id(explicit_project_id) if explicit_project_id else find_project_configs_for_path(worktree)
     if len(matches) == 1:
-        resolved_path = matches[0].get("currentWorktreePath") or matches[0].get("canonicalRepoRoot") or str(worktree)
+        resolved_path = best_worktree_path_from_project_match(matches[0], worktree)
         manager = SidecarManager(
             Path(resolved_path),
             project_id_override=getattr(args, "project_id", "") or str(matches[0].get("projectId") or ""),
@@ -2339,6 +2381,33 @@ def resolve_language(args: argparse.Namespace, manager: SidecarManager) -> str:
     return normalize_language(config.get("preferredLanguage") or "en")
 
 
+NON_GIT_WORKTREE_GUIDANCE = "Current path is not a Git worktree. Use resume-query with a task nickname or provide a real worktree path."
+
+
+def allow_non_git_worktree(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "allow_non_git_worktree", False))
+
+
+def guarded_non_git_write_response(manager: SidecarManager, action: str) -> dict[str, Any]:
+    return {
+        "projectId": manager.project_id,
+        "action": action,
+        "guarded": True,
+        "nonGitWorktree": True,
+        "createdOrUpdated": False,
+        "repoMutated": False,
+        "sidecarMutated": False,
+        "worktreePath": str(manager.git.worktree_path),
+        "guidance": NON_GIT_WORKTREE_GUIDANCE,
+    }
+
+
+def task_has_non_git_unknown_warning(manager: SidecarManager, task: dict[str, Any]) -> bool:
+    if manager.git.is_git_worktree:
+        return False
+    return str(task.get("branch") or "") == "unknown" and str(task.get("worktreePath") or "") == str(manager.git.worktree_path)
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     started_at = time.perf_counter()
     manager = make_manager(args)
@@ -2368,6 +2437,7 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
         "projectId": manager.project_id,
         "projectIdSource": manager.project_id_source,
         "repoRoot": str(manager.git.repo_root),
+        "isGitWorktree": manager.git.is_git_worktree,
         "branch": manager.git.branch,
         "baseBranch": manager.git.base_branch,
         "worktreePath": str(manager.git.worktree_path),
@@ -2453,6 +2523,9 @@ def cmd_intake(args: argparse.Namespace) -> int:
 def cmd_start_feature(args: argparse.Namespace) -> int:
     started_at = time.perf_counter()
     manager = make_manager(args)
+    if not manager.git.is_git_worktree and not allow_non_git_worktree(args):
+        print(json.dumps(guarded_non_git_write_response(manager, "start-feature"), ensure_ascii=False, indent=2))
+        return 0
     payload = manager.load_active_tasks()
     tasks = payload.get("tasks", [])
     branch_matches = [item for item in tasks if item.get("branch") == manager.git.branch]
@@ -2731,6 +2804,8 @@ def build_resume_payload(
             "upstream": manager.git.upstream,
             "dirtyFiles": manager.git.dirty_files,
             "dirtyFingerprint": manager.git.dirty_fingerprint,
+            "nonGitWorktree": not manager.git.is_git_worktree,
+            "warnings": [],
             "stale": stale,
             "startThreadSummary": build_start_thread_summary(manager, task, snapshot["handoffAvailable"], stale, language),
             "missingContext": [],
@@ -2739,6 +2814,12 @@ def build_resume_payload(
     )
     if not sidecar_hit:
         snapshot["missingContext"].append("sidecar task not found; using provisional task based on current branch")
+    if not manager.git.is_git_worktree:
+        snapshot["warnings"].append("Current path is not a Git worktree; prefer resume-query with a task nickname or provide a real worktree path.")
+        snapshot["guidance"] = NON_GIT_WORKTREE_GUIDANCE
+        snapshot["missingContext"].append("current path is not a Git worktree")
+    if task_has_non_git_unknown_warning(manager, task):
+        snapshot["warnings"].append("Matched task has branch=unknown on a non-Git path; this may be a historical container task and was not automatically cleaned.")
     if not snapshot["handoffAvailable"]:
         snapshot["missingContext"].append("latest handoff file not found")
     for doc in snapshot["stableDocs"]:
@@ -2781,6 +2862,11 @@ def audit_context_payload(manager: SidecarManager, payload: dict[str, Any] | Non
         findings.append({"kind": "dirty-worktree", "message": tr(language, "finding_dirty_worktree"), "files": manager.git.dirty_files})
     if not sidecar_hit:
         findings.append({"kind": "missing-task", "message": tr(language, "finding_missing_task")})
+    warnings: list[str] = []
+    if not manager.git.is_git_worktree:
+        warnings.append("Current path is not a Git worktree; prefer resume-query with a task nickname or provide a real worktree path.")
+    if task_has_non_git_unknown_warning(manager, task):
+        warnings.append("Matched task has branch=unknown on a non-Git path; this may be a historical container task and was not automatically cleaned.")
 
     backfill_prompts = []
     if missing_handoff:
@@ -2813,6 +2899,8 @@ def audit_context_payload(manager: SidecarManager, payload: dict[str, Any] | Non
         },
         "findings": findings,
         "backfillPrompts": unique_nonempty(backfill_prompts),
+        "warnings": warnings,
+        "nonGitWorktree": not manager.git.is_git_worktree,
         "conflicts": conflicts,
     }
 
@@ -3147,6 +3235,9 @@ def cmd_audit_project(args: argparse.Namespace) -> int:
 def cmd_handoff(args: argparse.Namespace) -> int:
     started_at = time.perf_counter()
     manager = make_manager(args)
+    if not manager.git.is_git_worktree and not allow_non_git_worktree(args):
+        print(json.dumps(guarded_non_git_write_response(manager, "handoff"), ensure_ascii=False, indent=2))
+        return 0
     language = resolve_language(args, manager)
     payload = manager.load_active_tasks()
     task, _ = manager.find_task(payload)
@@ -3508,6 +3599,7 @@ def build_parser() -> argparse.ArgumentParser:
         subparser.add_argument("--project-id", help="Override sidecar projectId for multi-worktree projects.")
         subparser.add_argument("--base-branch", help="Override and persist the feature base branch for this sidecar project.")
         subparser.add_argument("--language", choices=sorted(SUPPORTED_LANGUAGES), required=require_language, help="Human-facing output language.")
+        subparser.add_argument("--allow-non-git-worktree", action="store_true", help="Opt in to writing task state for a non-Git directory.")
 
     def add_task_update_args(subparser: argparse.ArgumentParser) -> None:
         subparser.add_argument("--task-id")
