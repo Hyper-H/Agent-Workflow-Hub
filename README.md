@@ -86,6 +86,10 @@ Use $agent-workflow-hub to continue markerless clean.
 ```
 
 ```text
+Use $agent-workflow-hub to act as the markerless execution thread.
+```
+
+```text
 Use $agent-workflow-hub to save a handoff before I stop today.
 ```
 
@@ -193,7 +197,9 @@ This writes `preferredLanguage` only under `%USERPROFILE%\.codex\projects\<proje
 
 ## Natural-Language Routing
 
-V2.8 adds deterministic task routing for project hubs and execution threads. When the user says something like `continue markerless clean`, agents should use `resume-query --query "markerless clean"` or `resolve-task --query "markerless clean"` with a known project/worktree path.
+V2.8 adds deterministic task routing for project hubs and execution threads. When the user says something like `continue markerless clean`, `take over markerless`, `act as the markerless execution thread`, or Chinese phrases like `接手 markerless`, agents should use `resume-query --query "markerless"` or `resolve-task --query "markerless"` with a known project/worktree path.
+
+Use `resume-feature` only when the user explicitly means the current Git worktree, such as `resume this worktree` or `继续当前 worktree`.
 
 This routing layer is sidecar-first, git-aware, and scan-minimal. It restores the last recorded workflow state for the resolved task; it does not prove code correctness, replace tests, or replace PR review. Agents still choose their own investigation strategy and may use sidecar state, handoffs, Git facts, touched files, recent commits, PRs, issues, tests, or targeted search as needed.
 
@@ -209,6 +215,8 @@ Task aliases are supported:
 `resolve-task` returns short JSON with `resolved`, `confidence`, `taskId`, `branch`, `worktreePath`, `matchedFields`, `candidates`, and `disambiguationQuestion`. High-confidence matches can be resumed automatically by `resume-query`; low-confidence or close candidates return one question instead of guessing.
 
 Project discovery records `canonicalRepoRoot`, `projectContainerRoots`, and `knownWorktreeRoots` in local sidecar config. This lets a hub thread route from a non-Git container directory to a known project when there is a single clear match. If multiple projects match, the CLI returns candidates and asks for disambiguation.
+
+`start-feature` and `handoff` are guarded on non-Git paths. By default they refuse to create or update sidecar task state from a container directory and return guidance to use `resume-query` or a real worktree path. Use `--allow-non-git-worktree` only when the user explicitly wants to record a non-Git directory.
 
 ## Sidecar State
 

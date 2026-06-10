@@ -82,6 +82,14 @@ Use $agent-workflow-hub to resume this worktree and tell me the immediate next s
 ```
 
 ```text
+Use $agent-workflow-hub to 接手 markerless.
+```
+
+```text
+Use $agent-workflow-hub to 你是 markerless 的执行进程.
+```
+
+```text
 Use $agent-workflow-hub to save a handoff before I stop today.
 ```
 
@@ -189,7 +197,9 @@ Use $agent-workflow-hub to set human-facing output language to zh-CN.
 
 ## 自然语言任务路由
 
-V2.8 增加确定性的自然语言 task routing。用户只说 `continue markerless clean` 时，agent 可以用 `resume-query --query "markerless clean"` 或 `resolve-task --query "markerless clean"`，从本地 sidecar 解析到正确 task/worktree，再执行 sidecar-first resume。
+V2.8 增加确定性的自然语言 task routing。用户只说 `continue markerless clean`、`接手 markerless`、`继续 markerless`、`恢复 markerless`、`你是 markerless 的执行进程` 或 `作为 markerless execution thread` 时，agent 应优先用 `resume-query --query "markerless"` 或 `resolve-task --query "markerless"`，从本地 sidecar 解析到正确 task/worktree，再执行 sidecar-first resume。
+
+只有用户明确说 `当前 worktree`、`this worktree` 或明显指向已经选中的 Git worktree 时，才优先使用 `resume-feature`。
 
 这不是替代 agent 的代码理解、测试或 PR review。它只是一个稳定、可审计、低摩擦的 workflow routing layer：恢复最近记录的 workflow state，并给出 branch、worktree、HEAD、dirty status、nextStep、blocker、validation、safetyRules 和 startThreadSummary。
 
@@ -201,6 +211,8 @@ Task alias 支持：
 - `alias-task --alias "markerless clean"` 添加 alias。
 - `alias-task --remove-alias "markerless clean"` 删除 alias。
 - 程序生成的 alias 会参与匹配，但不会污染 task 的持久化 `aliases`。
+
+`start-feature` 和 `handoff` 默认会拒绝在非 Git 路径上创建或更新 sidecar task/handoff，并返回 guidance，建议使用 `resume-query` 或提供真实 worktree path。只有用户明确要记录非 Git 目录时，才使用 `--allow-non-git-worktree`。
 ## Sidecar 状态
 动态状态只保存在本机，不进入目标仓库：
 
