@@ -472,6 +472,10 @@ def unique_nonempty(values: list[str], limit: int | None = None) -> list[str]:
     return result
 
 
+def bool_label(value: bool) -> str:
+    return "yes" if value else "no"
+
+
 def normalized_dedupe_key(value: str) -> str:
     return " ".join(value.casefold().split())
 
@@ -2114,6 +2118,506 @@ def build_eval_report_markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+VISUAL_ACTIVE_STATUSES = {"active", "paused", "blocked", "review"}
+VISUAL_LEGEND = {
+    "healthy": "handoff, validation, safety rules, clean worktree, current snapshot, and no blocker",
+    "attention": "needs a light follow-up such as dirty worktree, recommended action, missing alias, or minor missing field",
+    "blocked": "blocked status, blocker, stale snapshot, or missing handoff/validation/safety rules",
+    "archived": "archived context shown only when includeArchive is enabled",
+}
+VISUAL_TEXT = {
+    "en": {
+        "title": "Project Visualization",
+        "generated_at": "Generated At",
+        "sidecar": "Sidecar",
+        "canonical_repo": "Canonical Repo",
+        "project_graph": "Project Graph",
+        "legend": "Legend",
+        "details": "Details",
+        "task": "Task",
+        "worktree": "Worktree",
+        "thread_role": "Thread Role",
+        "health": "Health",
+        "handoff": "Handoff",
+        "validation": "Validation",
+        "safety": "Safety",
+        "dirty_stale": "Dirty/Stale",
+        "action": "Action",
+        "needs_attention": "Needs Attention",
+        "archive_summary": "Archive Summary",
+        "archived_hidden": "Archived hidden",
+        "archived_visible": "Archived visible",
+        "archived_total": "Archived total",
+        "warnings": "Warnings",
+        "none": "None.",
+        "missing": "missing",
+        "needs_review": "needs review",
+        "legend_healthy": VISUAL_LEGEND["healthy"],
+        "legend_attention": VISUAL_LEGEND["attention"],
+        "legend_blocked": VISUAL_LEGEND["blocked"],
+        "legend_archived": VISUAL_LEGEND["archived"],
+    },
+    "zh-CN": {
+        "title": "项目可视化",
+        "generated_at": "生成时间",
+        "sidecar": "Sidecar 路径",
+        "canonical_repo": "规范仓库",
+        "project_graph": "项目关系图",
+        "legend": "图例",
+        "details": "详情",
+        "task": "任务",
+        "worktree": "Worktree",
+        "thread_role": "线程角色",
+        "health": "健康度",
+        "handoff": "Handoff",
+        "validation": "Validation",
+        "safety": "Safety",
+        "dirty_stale": "Dirty/Stale",
+        "action": "建议行动",
+        "needs_attention": "需要关注",
+        "archive_summary": "归档摘要",
+        "archived_hidden": "已隐藏归档",
+        "archived_visible": "已显示归档",
+        "archived_total": "归档总数",
+        "warnings": "警告",
+        "none": "无。",
+        "missing": "缺失",
+        "needs_review": "需要检查",
+        "legend_healthy": "handoff、validation、safety rules 已记录，worktree 干净，快照未过期且无 blocker",
+        "legend_attention": "需要轻量跟进，例如 dirty worktree、recommended action、缺 alias 或次要字段缺失",
+        "legend_blocked": "blocked 状态、存在 blocker、stale 快照，或缺 handoff/validation/safety rules",
+        "legend_archived": "仅在 includeArchive 启用时显示的归档上下文",
+    },
+}
+
+
+def visual_text(language: str, key: str) -> str:
+    language = normalize_language(language)
+    return VISUAL_TEXT.get(language, VISUAL_TEXT["en"]).get(key, VISUAL_TEXT["en"].get(key, key))
+
+
+def visual_legend(language: str) -> dict[str, str]:
+    return {
+        "healthy": visual_text(language, "legend_healthy"),
+        "attention": visual_text(language, "legend_attention"),
+        "blocked": visual_text(language, "legend_blocked"),
+        "archived": visual_text(language, "legend_archived"),
+    }
+
+
+def visual_node_id(prefix: str, value: str) -> str:
+    digest = hashlib.sha1(value.encode("utf-8", errors="replace")).hexdigest()[:10]
+    return f"{prefix}_{digest}"
+
+
+def mermaid_label(value: str, max_len: int = 48) -> str:
+    value = short_text(value or "unknown", max_len=max_len)
+    return value.replace("\\", "\\\\").replace('"', "'").replace("[", "(").replace("]", ")")
+
+
+def markdown_cell(value: Any) -> str:
+    if isinstance(value, list):
+        value = ", ".join(str(item) for item in value if str(item).strip())
+    text = str(value if value not in (None, "") else "none")
+    return text.replace("\n", " ").replace("|", "\\|")
+
+
+def task_validation_present(task: dict[str, Any]) -> bool:
+    validation = task.get("validation") or {}
+    return bool(
+        validation.get("validatedAt")
+        or validation.get("commands")
+        or validation.get("results")
+        or validation.get("notes")
+    )
+
+
+def visual_health_for_row(row: dict[str, Any]) -> str:
+    status = str(row.get("taskStatus") or "").strip()
+    if status == "archived":
+        return "archived"
+    if (
+        status == "blocked"
+        or row.get("blocker")
+        or row.get("stale")
+        or not row.get("handoffAvailable")
+        or not row.get("validationPresent")
+        or not row.get("safetyRulesPresent")
+    ):
+        return "blocked"
+    if row.get("dirty") or row.get("recommendedAction") or not row.get("aliases"):
+        return "attention"
+    return "healthy"
+
+
+def thread_role_for_row(row: dict[str, Any]) -> str:
+    status = row.get("taskStatus", "")
+    if status == "archived":
+        return "archived execution"
+    if status == "review":
+        return "review/discussion"
+    return "primary execution"
+
+
+def load_archived_tasks(manager: SidecarManager) -> list[dict[str, Any]]:
+    manager.ensure_layout()
+    archived: list[dict[str, Any]] = []
+    for path in sorted(manager.archive_dir.glob("*.json")):
+        payload = read_json(path, {})
+        if isinstance(payload, dict):
+            item = dict(payload)
+            item["_archivePath"] = str(path)
+            archived.append(item)
+    return archived
+
+
+def base_visual_row_from_task(task: dict[str, Any], *, archived: bool = False) -> dict[str, Any]:
+    status = "archived" if archived else str(task.get("status") or "active")
+    handoff_available = bool(task.get("_handoffAvailable", False))
+    row = {
+        "taskId": task.get("taskId", ""),
+        "branch": task.get("branch", ""),
+        "worktreePath": task.get("worktreePath", ""),
+        "threadRole": "archived execution" if archived else "primary execution",
+        "taskStatus": status,
+        "health": "archived" if archived else "attention",
+        "handoffAvailable": handoff_available,
+        "validationPresent": task_validation_present(task),
+        "safetyRulesPresent": bool(task.get("safetyRules")),
+        "dirty": bool(task.get("dirtyFiles") or []),
+        "dirtyFiles": task.get("dirtyFiles") or [],
+        "stale": False,
+        "staleReasons": [],
+        "blocker": task.get("blocker", ""),
+        "nextStep": task.get("nextStep", ""),
+        "aliases": task.get("aliases", []),
+        "recommendedAction": "",
+        "recommendedActionType": "",
+        "sidecarHit": True,
+        "archived": archived,
+        "handoffPath": task.get("_handoffPath", ""),
+        "archivePath": task.get("_archivePath", ""),
+    }
+    row["health"] = visual_health_for_row(row)
+    return row
+
+
+def build_visual_project_payload(manager: SidecarManager, include_archive: bool, language: str) -> dict[str, Any]:
+    payload = manager.load_active_tasks()
+    tasks = payload.get("tasks", [])
+    state = manager.write_project_state(tasks)
+    worktrees, worktree_error = parse_git_worktree_list(manager.git.repo_root)
+
+    rows: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    for item in worktrees:
+        path = item.get("path", "")
+        if not path:
+            continue
+        try:
+            wt_manager = SidecarManager(
+                Path(path),
+                project_id_override=manager.project_id,
+                base_branch_override=manager.git.base_branch,
+            )
+            audit = audit_context_payload(wt_manager, payload, language)
+            row = worktree_audit_row(item, audit, wt_manager)
+            task = audit.get("task") or {}
+            row["aliases"] = task.get("aliases", [])
+            row["threadRole"] = thread_role_for_row(row)
+            row["handoffPath"] = audit.get("handoffPath", "")
+            rows.append(row)
+        except Exception as exc:
+            errors.append({"worktreePath": path, "error": short_text(str(exc), max_len=500)})
+
+    worktree_paths = {str(Path(row["worktreePath"]).resolve()) for row in rows if row.get("worktreePath")}
+    active_tasks = [task for task in tasks if task.get("status", "active") in VISUAL_ACTIVE_STATUSES]
+    active_without_worktree: list[dict[str, Any]] = []
+    for task in active_tasks:
+        raw_path = str(task.get("worktreePath") or "")
+        resolved = str(Path(raw_path).resolve()) if raw_path else ""
+        if raw_path and resolved in worktree_paths:
+            continue
+        active_without_worktree.append(
+            {
+                "taskId": task.get("taskId", ""),
+                "branch": task.get("branch", ""),
+                "worktreePath": raw_path,
+                "status": task.get("status", ""),
+                "updatedAt": task.get("updatedAt", ""),
+            }
+        )
+        task_copy = dict(task)
+        task_copy["_handoffPath"] = str(manager.handoff_path_for(task)) if task.get("taskId") else ""
+        task_copy["_handoffAvailable"] = bool(task_copy["_handoffPath"] and Path(task_copy["_handoffPath"]).exists())
+        row = base_visual_row_from_task(task_copy)
+        row["recommendedAction"] = "active task points to a missing worktree"
+        row["recommendedActionType"] = "cleanup-or-recover-missing-worktree"
+        row["health"] = "blocked" if row.get("taskStatus") == "blocked" or not row.get("handoffAvailable") else "attention"
+        rows.append(row)
+
+    recommended_actions, _, cleanup_prompts = build_hub_action_prompts(manager, rows, active_without_worktree, language)
+    actions_by_key: dict[str, dict[str, Any]] = {}
+    for action in recommended_actions:
+        for key in [action.get("taskId", ""), action.get("worktreePath", ""), action.get("branch", "")]:
+            if key:
+                actions_by_key.setdefault(str(key), action)
+
+    task_rows: list[dict[str, Any]] = []
+    for row in rows:
+        action = (
+            actions_by_key.get(str(row.get("taskId") or ""))
+            or actions_by_key.get(str(row.get("worktreePath") or ""))
+            or actions_by_key.get(str(row.get("branch") or ""))
+        )
+        if action:
+            row["recommendedAction"] = action.get("reason", "")
+            row["recommendedActionType"] = action.get("recommendedActionType", "")
+        row["health"] = visual_health_for_row(row)
+        row["threadRole"] = thread_role_for_row(row)
+        task_rows.append(
+            {
+                "taskId": row.get("taskId", "") or row.get("branch", "") or Path(str(row.get("worktreePath") or "")).name or "unknown",
+                "branch": row.get("branch", ""),
+                "worktreePath": row.get("worktreePath", ""),
+                "threadRole": row.get("threadRole", "primary execution"),
+                "taskStatus": row.get("taskStatus", ""),
+                "health": row.get("health", "attention"),
+                "handoffAvailable": bool(row.get("handoffAvailable")),
+                "validationPresent": bool(row.get("validationPresent")),
+                "safetyRulesPresent": bool(row.get("safetyRulesPresent")),
+                "dirty": bool(row.get("dirty")),
+                "stale": bool(row.get("stale")),
+                "blocker": row.get("blocker", ""),
+                "recommendedAction": row.get("recommendedAction", ""),
+                "recommendedActionType": row.get("recommendedActionType", ""),
+                "aliases": row.get("aliases", []),
+                "nextStep": row.get("nextStep", ""),
+                "sidecarHit": bool(row.get("sidecarHit")),
+                "archived": False,
+            }
+        )
+
+    archived_tasks = load_archived_tasks(manager)
+    archived_rows: list[dict[str, Any]] = []
+    if include_archive:
+        for task in archived_tasks:
+            if task.get("taskId"):
+                archived_rows.append(base_visual_row_from_task(task, archived=True))
+        task_rows.extend(archived_rows)
+
+    project_node = {
+        "id": visual_node_id("project", manager.project_id),
+        "type": "project",
+        "label": manager.project_id,
+        "health": "healthy",
+        "details": {
+            "sidecarRoot": str(manager.sidecar_root),
+            "canonicalRepoRoot": str(manager.git.repo_root),
+            "baseBranch": manager.git.base_branch,
+            "threadRole": "project hub",
+        },
+    }
+    nodes: list[dict[str, Any]] = [project_node]
+    edges: list[dict[str, str]] = []
+    seen_nodes = {project_node["id"]}
+    for row in task_rows:
+        task_key = row.get("taskId") or row.get("branch") or row.get("worktreePath") or "unknown"
+        task_id = visual_node_id("task", str(task_key))
+        worktree_path = str(row.get("worktreePath") or "")
+        worktree_label = Path(worktree_path).name if worktree_path else "missing worktree"
+        worktree_id = visual_node_id("worktree", worktree_path or str(task_key))
+        role = str(row.get("threadRole") or "primary execution")
+        role_id = visual_node_id("role", f"{task_key}:{role}")
+        node_specs = [
+            {"id": task_id, "type": "task", "label": short_text(str(task_key), max_len=40), "health": row.get("health", "attention"), "details": row},
+            {
+                "id": worktree_id,
+                "type": "worktree",
+                "label": short_text(worktree_label, max_len=40),
+                "health": row.get("health", "attention"),
+                "details": {"worktreePath": worktree_path, "branch": row.get("branch", ""), "dirty": row.get("dirty", False), "stale": row.get("stale", False)},
+            },
+            {"id": role_id, "type": "threadRole", "label": role, "health": row.get("health", "attention"), "details": {"taskId": task_key, "role": role}},
+        ]
+        for spec in node_specs:
+            if spec["id"] not in seen_nodes:
+                nodes.append(spec)
+                seen_nodes.add(spec["id"])
+        edges.extend(
+            [
+                {"from": project_node["id"], "to": task_id, "label": "has task"},
+                {"from": task_id, "to": worktree_id, "label": "uses"},
+                {"from": worktree_id, "to": role_id, "label": "owned by"},
+            ]
+        )
+
+    needs_attention = []
+    for row in task_rows:
+        if row.get("health") not in {"attention", "blocked"}:
+            continue
+        reason = (
+            row.get("recommendedAction")
+            or ("blocked" if row.get("blocker") else "")
+            or ("stale" if row.get("stale") else "")
+            or ("missing handoff" if not row.get("handoffAvailable") else "")
+            or ("missing validation" if not row.get("validationPresent") else "")
+            or ("missing safety rules" if not row.get("safetyRulesPresent") else "")
+            or ("dirty worktree" if row.get("dirty") else "")
+            or ("missing alias" if not row.get("aliases") else "")
+        )
+        needs_attention.append(
+            {
+                "taskId": row.get("taskId", ""),
+                "branch": row.get("branch", ""),
+                "health": row.get("health", ""),
+                "reason": reason,
+                "worktreePath": row.get("worktreePath", ""),
+            }
+        )
+
+    summary_counts = {
+        "visibleTasks": len(task_rows),
+        "activeTasks": sum(1 for row in task_rows if row.get("taskStatus") == "active"),
+        "pausedTasks": sum(1 for row in task_rows if row.get("taskStatus") == "paused"),
+        "blockedTasks": sum(1 for row in task_rows if row.get("taskStatus") == "blocked"),
+        "reviewTasks": sum(1 for row in task_rows if row.get("taskStatus") == "review"),
+        "archivedVisible": sum(1 for row in task_rows if row.get("archived")),
+        "healthy": sum(1 for row in task_rows if row.get("health") == "healthy"),
+        "attention": sum(1 for row in task_rows if row.get("health") == "attention"),
+        "blocked": sum(1 for row in task_rows if row.get("health") == "blocked"),
+        "archived": sum(1 for row in task_rows if row.get("health") == "archived"),
+        "gitWorktrees": len(worktrees),
+        "sidecarActiveTasks": len(active_tasks),
+        "recommendedActions": len(recommended_actions),
+        "cleanupPrompts": len(cleanup_prompts),
+        "worktreeAuditErrors": len(errors),
+    }
+    archive_summary = {
+        "includeArchive": include_archive,
+        "archivedHidden": 0 if include_archive else len(archived_tasks),
+        "archivedTotal": len(archived_tasks),
+        "archivedVisible": len(archived_rows),
+    }
+    warnings: list[str] = []
+    if worktree_error:
+        warnings.append(f"Git worktree inventory error: {short_text(worktree_error, max_len=200)}")
+    if errors:
+        warnings.append(f"{len(errors)} worktree audit error(s) were omitted from the graph.")
+
+    return {
+        "projectId": manager.project_id,
+        "generatedAt": now_iso(),
+        "language": normalize_language(language),
+        "sidecarRoot": str(manager.sidecar_root),
+        "canonicalRepoRoot": str(manager.git.repo_root),
+        "baseBranch": manager.git.base_branch,
+        "summaryCounts": summary_counts,
+        "nodes": nodes,
+        "edges": edges,
+        "taskRows": task_rows,
+        "legend": visual_legend(language),
+        "needsAttention": needs_attention,
+        "archiveSummary": archive_summary,
+        "recommendedActions": recommended_actions,
+        "cleanupPrompts": cleanup_prompts,
+        "warnings": warnings,
+        "errors": errors,
+        "projectStatus": {
+            "activeTaskCount": state.get("activeTaskCount", 0),
+            "currentBranch": state.get("currentBranch", ""),
+        },
+        "reportPaths": {},
+    }
+
+
+def build_visual_project_markdown(report: dict[str, Any]) -> str:
+    language = str(report.get("language") or "en")
+    lines = [
+        f"# {visual_text(language, 'title')}: {report['projectId']}",
+        "",
+        f"- {visual_text(language, 'generated_at')}: {report['generatedAt']}",
+        f"- {visual_text(language, 'sidecar')}: {report['sidecarRoot']}",
+        f"- {visual_text(language, 'canonical_repo')}: {report['canonicalRepoRoot']}",
+        "",
+        f"## {visual_text(language, 'project_graph')}",
+        "",
+        "```mermaid",
+        "graph LR",
+    ]
+    for node in report.get("nodes", []):
+        label = mermaid_label(f"{node.get('label', 'unknown')} [{node.get('health', 'attention')}]")
+        lines.append(f'  {node["id"]}["{label}"]')
+    for edge in report.get("edges", []):
+        label = mermaid_label(edge.get("label", ""), max_len=24)
+        lines.append(f'  {edge["from"]} -->|"{label}"| {edge["to"]}')
+    lines.extend(
+        [
+            "  classDef healthy fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20;",
+            "  classDef attention fill:#fff8e1,stroke:#f9a825,color:#4e342e;",
+            "  classDef blocked fill:#ffebee,stroke:#c62828,color:#4a0000;",
+            "  classDef archived fill:#eeeeee,stroke:#757575,color:#424242;",
+        ]
+    )
+    for node in report.get("nodes", []):
+        health = node.get("health", "attention")
+        if health in VISUAL_LEGEND:
+            lines.append(f"  class {node['id']} {health};")
+    lines.extend(["```", "", f"## {visual_text(language, 'legend')}"])
+    for health, description in report.get("legend", {}).items():
+        lines.append(f"- `{health}`: {description}")
+    lines.extend(
+        [
+            "",
+            f"## {visual_text(language, 'details')}",
+            "",
+            f"| {visual_text(language, 'task')} | {visual_text(language, 'worktree')} | {visual_text(language, 'thread_role')} | {visual_text(language, 'health')} | {visual_text(language, 'handoff')} | {visual_text(language, 'validation')} | {visual_text(language, 'safety')} | {visual_text(language, 'dirty_stale')} | {visual_text(language, 'action')} |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        ]
+    )
+    for row in report.get("taskRows", []):
+        dirty_stale = f"dirty={bool_label(bool(row.get('dirty')))}, stale={bool_label(bool(row.get('stale')))}"
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    markdown_cell(row.get("taskId") or row.get("branch") or "unknown"),
+                    markdown_cell(Path(str(row.get("worktreePath") or "")).name or visual_text(language, "missing")),
+                    markdown_cell(row.get("threadRole", "")),
+                    markdown_cell(row.get("health", "")),
+                    markdown_cell(bool_label(bool(row.get("handoffAvailable")))),
+                    markdown_cell(bool_label(bool(row.get("validationPresent")))),
+                    markdown_cell(bool_label(bool(row.get("safetyRulesPresent")))),
+                    markdown_cell(dirty_stale),
+                    markdown_cell(row.get("recommendedAction") or row.get("blocker") or "none"),
+                ]
+            )
+            + " |"
+        )
+    lines.extend(["", f"## {visual_text(language, 'needs_attention')}"])
+    needs_attention = report.get("needsAttention", [])
+    if needs_attention:
+        for item in needs_attention:
+            label = item.get("taskId") or item.get("branch") or Path(str(item.get("worktreePath") or "")).name
+            lines.append(f"- `{label or 'unknown'}`: {item.get('health')} - {item.get('reason') or visual_text(language, 'needs_review')}")
+    else:
+        lines.append(f"- {visual_text(language, 'none')}")
+    archive = report.get("archiveSummary", {})
+    lines.extend(
+        [
+            "",
+            f"## {visual_text(language, 'archive_summary')}",
+            f"- {visual_text(language, 'archived_hidden')}: {archive.get('archivedHidden', 0)}",
+            f"- {visual_text(language, 'archived_visible')}: {archive.get('archivedVisible', 0)}",
+            f"- {visual_text(language, 'archived_total')}: {archive.get('archivedTotal', 0)}",
+        ]
+    )
+    if report.get("warnings"):
+        lines.extend(["", f"## {visual_text(language, 'warnings')}"])
+        lines.extend([f"- {warning}" for warning in report.get("warnings", [])])
+    return "\n".join(lines) + "\n"
+
+
 def normalize_query_text(value: str) -> str:
     value = value.casefold()
     value = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", " ", value)
@@ -3425,6 +3929,51 @@ def cmd_eval_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_visualize_project(args: argparse.Namespace) -> int:
+    started_at = time.perf_counter()
+    manager = make_manager(args)
+    language = resolve_language(args, manager)
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    report_base = f"visual-{timestamp}-{manager.project_id}"
+    json_path = manager.reports_dir / f"{report_base}.json"
+    markdown_path = manager.reports_dir / f"{report_base}.md"
+    report = build_visual_project_payload(manager, bool(args.include_archive), language)
+    report["reportPaths"] = {
+        "markdown": str(markdown_path),
+        "json": str(json_path),
+    }
+    with file_lock(json_path):
+        atomic_write_text(json_path, json.dumps(report, ensure_ascii=False, indent=2) + "\n")
+    with file_lock(markdown_path):
+        atomic_write_text(markdown_path, build_visual_project_markdown(report))
+    manager.log_event(
+        "visualize-project",
+        started_at=started_at,
+        sidecar_hit=True,
+        handoff_available=None,
+        scan_scope="project-visualization",
+        reportMarkdownPath=str(markdown_path),
+        reportJsonPath=str(json_path),
+        visibleTasks=report.get("summaryCounts", {}).get("visibleTasks", 0),
+        needsAttentionCount=len(report.get("needsAttention", [])),
+    )
+    print(
+        json.dumps(
+            {
+                "projectId": manager.project_id,
+                "reportPaths": report["reportPaths"],
+                "summaryCounts": report.get("summaryCounts", {}),
+                "needsAttentionCount": len(report.get("needsAttention", [])),
+                "archiveSummary": report.get("archiveSummary", {}),
+                "fullJsonPastedByDefault": False,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0
+
+
 def issue_output(manager: SidecarManager, args: argparse.Namespace, *, create: bool, language: str = "en") -> dict[str, Any]:
     title, body = build_issue_text(manager, args, language)
     sensitive_findings = sensitive_issue_findings(title, body)
@@ -3734,6 +4283,11 @@ def build_parser() -> argparse.ArgumentParser:
     eval_report_parser.add_argument("--since", help="Include events at or after this date/datetime.")
     eval_report_parser.add_argument("--until", help="Include events at or before this date/datetime.")
     eval_report_parser.set_defaults(func=cmd_eval_report)
+
+    visualize_project_parser = subparsers.add_parser("visualize-project", help="Write project visualization Markdown and JSON reports")
+    add_common(visualize_project_parser)
+    visualize_project_parser.add_argument("--include-archive", action="store_true", help="Include archived tasks in the visualization.")
+    visualize_project_parser.set_defaults(func=cmd_visualize_project)
 
     draft_issue_parser = subparsers.add_parser("draft-issue", help="Generate a dogfood issue draft without requiring gh")
     add_common(draft_issue_parser)

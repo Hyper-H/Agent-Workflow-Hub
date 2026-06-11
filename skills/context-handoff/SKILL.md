@@ -150,6 +150,7 @@ You are an Explainer Thread for <project>. Repo/worktree: <path>. Explain <topic
 - `project-status`: Return compact sidecar project state for planning. This is not the full Git worktree inventory.
 - `weekly-report`: Generate a human-facing Markdown report under the sidecar `reports/` directory and reply with a short notification, not the full report by default.
 - `eval-report`: Generate lightweight workflow evaluation Markdown and JSON reports under the sidecar `reports/` directory. It reports proxy workflow metrics, not exact token usage or proof of correctness.
+- `visualize-project`: Generate a Markdown + Mermaid project relationship graph and companion JSON under the sidecar `reports/` directory. Use for human-facing project map requests; do not paste the full JSON by default.
 - `snapshot`: Print current worktree Git facts for lightweight backfill.
 - `draft-issue`: Generate a dogfood/debug issue draft with Facts, Inferences, Unknowns, Reproduction, Suggested Fix, and Priority. This never requires GitHub CLI.
 - `create-issue`: Create a dogfood/debug GitHub issue only when the user explicitly asks or dogfood issue mode is enabled, GitHub CLI is authenticated, content is safe, and no likely duplicate is found.
@@ -171,6 +172,7 @@ You are an Explainer Thread for <project>. Repo/worktree: <path>. Explain <topic
 - If the user explicitly says "create issue", "提 issue", or asks to enable dogfood issue mode, use `enable-dogfood-issue-mode` or `create-issue` as appropriate. Never create an issue from inferred intent alone.
 - If the user asks from a project hub thread, asks for all worktrees, asks what is active across the project, or mentions a canonical repo with many worktrees, use `audit-project` first. Use `project-status` only for compact sidecar state and `weekly-report` for a human update.
 - If the user asks whether Agent Workflow Hub is helping, asks for dogfood/evaluation metrics, or asks for a tool-effectiveness report, run `eval-report`. Keep it distinct from `weekly-report`, which is project progress reporting.
+- If the user says `visualize project`, `show project graph`, `可视化项目`, `显示项目图`, `项目关系图`, or `看一下项目全局`, run `visualize-project`. Reply with the Mermaid graph, Legend, details table, and needs-attention summary from the generated Markdown; avoid pasting the full JSON unless asked.
 - If setup is uncertain, run `doctor` first. Explain any missing optional tools without installing them.
 
 ## Project Hub / Multi-Worktree Protocol
@@ -193,6 +195,8 @@ Rows with `sidecarHit: false` mean no real sidecar task exists. In `audit-projec
 Never infer that sidecar active tasks are the full worktree inventory.
 
 Prefer old execution threads for backfill when they exist, because they may still have semantic context that Git cannot recover. If no old execution thread exists, use `newExecutionThreadPrompt` to open a new Primary Execution Thread. The new thread must recover or initialize sidecar state, distinguish facts/inferences/unknowns, add validation/safety/nextStep, save a handoff, and report back to the Project Hub. The prompt should not micromanage the agent's investigation path: the agent may use code reading, commits, PRs, issues, tests, or targeted search as needed.
+
+For project visualization requests, run `visualize-project` instead of asking the user to name Mermaid or workflow graph internals. The graph should show the main chain `Project -> Task -> Worktree -> Thread Role`; state and health belong in badges/classes and the details table, not as default graph nodes.
 
 ## Backfill Guidance
 
