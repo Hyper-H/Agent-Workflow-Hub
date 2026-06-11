@@ -261,6 +261,7 @@ Base branch can be overridden with `--base-branch dev`; the value is persisted i
 - `project-status`: Summarize compact sidecar project state. It is not the full Git worktree inventory.
 - `weekly-report`: Write a human-facing Markdown report under the sidecar `reports/` directory.
 - `eval-report`: Write lightweight workflow evaluation Markdown and JSON reports under `reports/`. This reports proxy workflow metrics, not exact token savings or proof of correctness.
+- `visualize-project`: Write a Markdown + Mermaid project graph and companion JSON under `reports/`. Use when the user asks to visualize the project or show the project graph.
 - `draft-issue`: Generate a dogfood/debug issue draft without requiring GitHub CLI.
 - `create-issue`: Create a dogfood/debug issue only when explicitly requested, safe, authenticated, and not likely duplicated.
 - `enable-dogfood-issue-mode` / `disable-dogfood-issue-mode`: Persist local sidecar permission for dogfood issue creation.
@@ -294,6 +295,18 @@ If a requested project id is normalized, such as `paus_robot_lab_host` becoming 
 When an old execution thread exists, send it `oldThreadBackfillPrompt` first because it may have semantic context Git cannot recover. If no old execution thread exists, open a new Primary Execution Thread with `newExecutionThreadPrompt`. That thread must recover or initialize sidecar state, distinguish facts/inferences/unknowns, add validation/safety/nextStep, save a handoff, and report back to the Project Hub.
 
 These prompts standardize the collaboration artifact; they do not micromanage the agent's investigation path. Agents may use sidecar state, handoff Markdown, Git facts, touched files, recent commits, PRs, issues, tests, or targeted search as needed.
+
+## Project Visualization
+
+When the user says `visualize project`, `show project graph`, `可视化项目`, `显示项目图`, `项目关系图`, or asks to see the global project map, use:
+
+```text
+Use $agent-workflow-hub to visualize this project.
+```
+
+The skill runs `visualize-project`, writes Markdown and JSON reports under the local sidecar `reports/` directory, and replies with the Mermaid graph, Legend, details table, and needs-attention summary instead of the full JSON by default.
+
+The default graph shows the main relationship chain `Project -> Task -> Worktree -> Thread Role`. Health is represented through node badges/classes and the details table. Archived tasks are hidden by default and summarized as `Archived hidden: N`; pass `--include-archive` only when archived context should be shown.
 
 ## Trustworthy Handoffs
 
