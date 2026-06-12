@@ -3930,6 +3930,8 @@ def cmd_eval_report(args: argparse.Namespace) -> int:
 
 
 def cmd_visualize_project(args: argparse.Namespace) -> int:
+    from project_hub_dashboard import build_visual_project_html
+
     started_at = time.perf_counter()
     manager = make_manager(args)
     language = resolve_language(args, manager)
@@ -3937,15 +3939,19 @@ def cmd_visualize_project(args: argparse.Namespace) -> int:
     report_base = f"visual-{timestamp}-{manager.project_id}"
     json_path = manager.reports_dir / f"{report_base}.json"
     markdown_path = manager.reports_dir / f"{report_base}.md"
+    html_path = manager.reports_dir / f"{report_base}.html"
     report = build_visual_project_payload(manager, bool(args.include_archive), language)
     report["reportPaths"] = {
         "markdown": str(markdown_path),
         "json": str(json_path),
+        "html": str(html_path),
     }
     with file_lock(json_path):
         atomic_write_text(json_path, json.dumps(report, ensure_ascii=False, indent=2) + "\n")
     with file_lock(markdown_path):
         atomic_write_text(markdown_path, build_visual_project_markdown(report))
+    with file_lock(html_path):
+        atomic_write_text(html_path, build_visual_project_html(report))
     manager.log_event(
         "visualize-project",
         started_at=started_at,
@@ -3954,6 +3960,7 @@ def cmd_visualize_project(args: argparse.Namespace) -> int:
         scan_scope="project-visualization",
         reportMarkdownPath=str(markdown_path),
         reportJsonPath=str(json_path),
+        reportHtmlPath=str(html_path),
         visibleTasks=report.get("summaryCounts", {}).get("visibleTasks", 0),
         needsAttentionCount=len(report.get("needsAttention", [])),
     )
