@@ -213,6 +213,10 @@ Task alias 支持：
 - 程序生成的 alias 会参与匹配，但不会污染 task 的持久化 `aliases`。
 
 `start-feature` 和 `handoff` 默认会拒绝在非 Git 路径上创建或更新 sidecar task/handoff，并返回 guidance，建议使用 `resume-query` 或提供真实 worktree path。只有用户明确要记录非 Git 目录时，才使用 `--allow-non-git-worktree`。
+
+V3.5 增加 route guard 和 thread attachment metadata。写入型 action 会检查请求内容里明确出现的 task、branch、worktree hints；如果这些 hints 和当前 cwd 冲突，CLI 会返回 `routingStatus: "mismatch"` 或 `"ambiguous"`，不会静默写进当前 branch task。对于 agent 推断出的关系，sidecar 会记录 `routingStatus`、`routingConfidence`、`routingEvidence` 和 `routingNeedsReview`，方便 hub UI 显示“推断路由待确认”。
+
+Task 支持轻量 parent/child 关系：子任务只保存 `parentTaskId`，children 由扫描所有 task 推导；sidecar 不保存 `childrenTaskIds`，也暂不支持 dependencies 或多 parent。可选 `phase`、`threadRole`、`threadLabel` 和 `threadPurpose` 用来描述 follow-up、validation、review、dogfood 或 explainer thread。
 ## Sidecar 状态
 动态状态只保存在本机，不进入目标仓库：
 
@@ -244,6 +248,7 @@ base branch 可以用 `--base-branch dev` 覆盖；该值会持久化到本地 s
 - `doctor`：检查 Python、Git、sidecar、可选 GitHub CLI 是否就绪。
 - `setup`：创建本地 sidecar 结构。
 - `start-feature`：把当前 branch/worktree 记录为 active task。
+- `attach-thread`：把 thread role、label、purpose、parent task、phase 和 routing review metadata 记录到 sidecar task。
 - `resume-feature`：恢复紧凑上下文、stale detection，并输出 `startThreadSummary`。
 - `handoff`：保存未完成工作、下一步、facts、inferences、unknowns、validation 和 safety rules。
 - `audit-context`：报告当前 worktree 缺 handoff、stale git 状态、缺 validation、缺 safetyRules、dirty worktree 和 backfill prompts。

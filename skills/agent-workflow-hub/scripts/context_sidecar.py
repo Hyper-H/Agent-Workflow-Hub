@@ -18,7 +18,10 @@ from pathlib import Path
 from typing import Any
 
 
-VALID_STATUSES = {"active", "paused", "blocked", "review"}
+VALID_STATUSES = {"active", "paused", "blocked", "review", "validation"}
+VALID_PHASES = {"implementation", "validation", "post-merge-validation", "follow-up", "bugfix"}
+VALID_THREAD_ROLES = {"primary-execution", "validation", "review", "discussion", "dogfood", "explainer", "hub"}
+VALID_ROUTING_STATUSES = {"confirmed", "inferred", "ambiguous", "mismatch", "provisional"}
 SIDECAR_VERSION = 2
 GH_AUTH_STATUS_TIMEOUT_SECONDS = 15
 DOGFOOD_ISSUE_LABELS = ["agent-reported", "needs-triage"]
@@ -438,6 +441,16 @@ def compact_task(task: dict[str, Any]) -> dict[str, Any]:
     return {
         "taskId": task.get("taskId", ""),
         "status": task.get("status", "active"),
+        "parentTaskId": task.get("parentTaskId", ""),
+        "phase": task.get("phase", ""),
+        "threadRole": task.get("threadRole", ""),
+        "threadLabel": task.get("threadLabel", ""),
+        "threadPurpose": task.get("threadPurpose", ""),
+        "routingStatus": task.get("routingStatus", ""),
+        "routingConfidence": task.get("routingConfidence", None),
+        "routingNeedsReview": bool(task.get("routingNeedsReview", False)),
+        "routingEvidence": task.get("routingEvidence", []),
+        "routingCandidates": task.get("routingCandidates", []),
         "goal": task.get("goal", ""),
         "branch": task.get("branch", ""),
         "baseBranch": task.get("baseBranch", ""),
@@ -506,6 +519,293 @@ def add_unique_path(values: list[Any], path: Path | str | None, *, limit: int | 
 
 def normalized_note_list(values: list[str] | None, limit: int | None = None, max_len: int = 240) -> list[str]:
     return unique_normalized_nonempty([short_text(item, max_len=max_len) for item in (values or [])], limit=limit)
+
+
+def normalize_optional_slug(value: str | None) -> str:
+    return slugify(value) if value and value.strip() else ""
+
+
+def normalize_phase(value: str | None) -> str:
+    value = (value or "").strip()
+    if not value:
+        return ""
+    normalized = slugify(value)
+    return normalized if normalized in VALID_PHASES else normalized
+
+
+def normalize_thread_role(value: str | None) -> str:
+    value = (value or "").strip()
+    if not value:
+        return ""
+    normalized = slugify(value)
+    aliases = {
+        "primary": "primary-execution",
+        "execution": "primary-execution",
+        "primary-execution-thread": "primary-execution",
+        "validator": "validation",
+        "qa": "validation",
+    }
+    normalized = aliases.get(normalized, normalized)
+    return normalized if normalized in VALID_THREAD_ROLES else normalized
+
+
+def normalize_routing_status(value: str | None) -> str:
+    value = (value or "").strip()
+    if not value:
+        return ""
+    normalized = slugify(value)
+    return normalized if normalized in VALID_ROUTING_STATUSES else normalized
+
+
+def task_update_text_for_route_hints(args: argparse.Namespace) -> str:
+    parts: list[str] = []
+    scalar_names = [
+        "task_id",
+        "goal",
+        "next_step",
+        "blocker",
+        "thread_summary",
+        "current_objective",
+        "notes",
+        "thread_label",
+        "thread_purpose",
+        "parent_task_id",
+    ]
+    list_names = [
+        "aliases",
+        "touched_areas",
+        "facts",
+        "inferences",
+        "unknowns",
+        "safety_rules",
+        "validation_commands",
+        "validation_results",
+        "done",
+        "not_done",
+        "risks",
+        "key_files",
+        "routing_evidence",
+    ]
+    for name in scalar_names:
+        value = getattr(args, name, None)
+        if value:
+            parts.append(str(value))
+    for name in list_names:
+        for value in getattr(args, name, None) or []:
+            if value:
+                parts.append(str(value))
+    return "\n".join(parts)
+
+
+def extract_branch_hints(text: str) -> list[str]:
+    hints = re.findall(r"\bcodex/[A-Za-z0-9._/-]+", text or "")
+    hints.extend(re.findall(r"\b(?:branch|Branch)\s*:\s*([A-Za-z0-9._/-]+)", text or ""))
+    return unique_normalized_nonempty([item.strip(".,);]\"'") for item in hints], limit=12)
+
+
+def extract_abs_path_hints(text: str) -> list[str]:
+    pattern = r"(?:(?:/[A-Za-z0-9._@%+=:,~-]+)+|[A-Za-z]:\\[^\s,;)\]]+)"
+    return unique_normalized_nonempty([item.strip(".,);]\"'") for item in re.findall(pattern, text or "")], limit=20)
+
+
+def resolved_path_text(value: str) -> str:
+    try:
+        return str(Path(value).expanduser().resolve())
+    except (OSError, RuntimeError):
+        return value
+
+
+def task_route_candidate(task: dict[str, Any], reason: str) -> dict[str, str]:
+    return {
+        "taskId": str(task.get("taskId") or ""),
+        "branch": str(task.get("branch") or ""),
+        "worktreePath": str(task.get("worktreePath") or ""),
+        "reason": reason,
+    }
+
+
+def route_result(status: str, **fields: Any) -> dict[str, Any]:
+    return {"routeStatus": status, "routingStatus": status, **fields}
+
+
+def route_guard_for_write(manager: "SidecarManager", payload: dict[str, Any], args: argparse.Namespace, action: str) -> dict[str, Any]:
+    if getattr(args, "confirm_route", False):
+        return route_result("confirmed", routingNeedsReview=False, routingEvidence=["route explicitly confirmed by --confirm-route"])
+
+    text = task_update_text_for_route_hints(args)
+    if not text.strip():
+        return route_result("confirmed", routingNeedsReview=False, routingEvidence=["no explicit route hints provided"])
+
+    tasks = payload.get("tasks", [])
+    branch_hints = extract_branch_hints(text)
+    raw_path_hints = extract_abs_path_hints(text)
+    task_id_hint = normalize_optional_slug(getattr(args, "task_id", None))
+    current_branch = manager.git.branch
+    current_worktree = str(manager.git.worktree_path)
+    current_worktree_resolved = resolved_path_text(current_worktree)
+
+    candidates: list[dict[str, str]] = []
+    evidence: list[str] = []
+    for branch in branch_hints:
+        evidence.append(f"text mentions branch {branch}")
+        candidates.extend(
+            task_route_candidate(task, f"branch hint {branch}")
+            for task in tasks
+            if str(task.get("branch") or "") == branch
+        )
+    route_path_hints: list[str] = []
+    for hinted_path in raw_path_hints:
+        hinted_resolved = resolved_path_text(hinted_path)
+        matches_known_task = False
+        for task in tasks:
+            task_path = str(task.get("worktreePath") or "")
+            if task_path and resolved_path_text(task_path) == hinted_resolved:
+                candidates.append(task_route_candidate(task, f"worktree path hint {hinted_path}"))
+                matches_known_task = True
+        likely_route_path = matches_known_task or "worktree" in hinted_path.casefold() or "projects" in hinted_path.casefold()
+        if likely_route_path:
+            route_path_hints.append(hinted_path)
+            evidence.append(f"text mentions worktree path {hinted_path}")
+    if task_id_hint:
+        for task in tasks:
+            if str(task.get("taskId") or "") == task_id_hint:
+                candidates.append(task_route_candidate(task, f"task id hint {task_id_hint}"))
+                evidence.append(f"argument task id matches {task_id_hint}")
+
+    candidates = list({json.dumps(candidate, sort_keys=True): candidate for candidate in candidates}.values())
+    hinted_branches = {item for item in branch_hints if item}
+    hinted_paths = {resolved_path_text(item) for item in route_path_hints if item}
+    branch_conflict = bool(hinted_branches and current_branch not in hinted_branches)
+    path_conflict = bool(
+        hinted_paths
+        and not any(
+            current_worktree_resolved == hinted_path
+            or hinted_path.startswith(f"{current_worktree_resolved}{os.sep}")
+            or current_worktree_resolved.startswith(f"{hinted_path}{os.sep}")
+            for hinted_path in hinted_paths
+        )
+    )
+    if not candidates and not branch_conflict and not path_conflict:
+        return route_result("confirmed", routingNeedsReview=False, routingEvidence=evidence or ["route hints match current context"])
+
+    current = {"branch": current_branch, "worktreePath": current_worktree}
+    hinted = {"branches": sorted(hinted_branches), "worktreePaths": sorted(hinted_paths)}
+    explicit_task_match = bool(task_id_hint and candidates)
+    if (branch_conflict or path_conflict) and explicit_task_match:
+        return route_result("inferred", **{
+            "routeMismatch": True,
+            "routingNeedsReview": True,
+            "routingConfidence": 0.82,
+            "current": current,
+            "hinted": hinted,
+            "routingEvidence": unique_normalized_nonempty(
+                [
+                    f"current branch is {current_branch}",
+                    f"current worktree is {current_worktree}",
+                    "explicit --task-id matched an existing sidecar task",
+                    *evidence,
+                ],
+                limit=20,
+            ),
+            "routingCandidates": candidates[:5],
+        })
+
+    if branch_conflict or path_conflict:
+        return route_result("mismatch", **{
+            "routeMismatch": True,
+            "routingNeedsReview": True,
+            "routingConfidence": 0.45,
+            "current": current,
+            "hinted": hinted,
+            "routingEvidence": unique_normalized_nonempty(
+                [
+                    f"current branch is {current_branch}",
+                    f"current worktree is {current_worktree}",
+                    *evidence,
+                ],
+                limit=20,
+            ),
+            "routingCandidates": candidates[:5],
+            "recommendation": f"Use the hinted worktree/task or rerun {action} with --confirm-route if the current route is intentional.",
+            "repoMutated": False,
+        })
+
+    if len(candidates) > 1:
+        return route_result("ambiguous", **{
+            "routeMismatch": False,
+            "routingNeedsReview": True,
+            "routingConfidence": 0.55,
+            "current": current,
+            "hinted": hinted,
+            "routingEvidence": evidence,
+            "routingCandidates": candidates[:5],
+            "recommendation": f"Multiple route candidates matched; rerun {action} with a specific --task-id/--worktree or --confirm-route.",
+            "repoMutated": False,
+        })
+
+    return route_result("inferred", **{
+        "routingNeedsReview": True,
+        "routingConfidence": 0.78,
+        "routingEvidence": evidence,
+        "routingCandidates": candidates[:1],
+    })
+
+
+def task_id_exists(payload: dict[str, Any], task_id: str) -> bool:
+    return any(str(task.get("taskId") or "") == task_id for task in payload.get("tasks", []))
+
+
+def parent_would_cycle(payload: dict[str, Any], task_id: str, parent_task_id: str) -> bool:
+    if not task_id or not parent_task_id:
+        return False
+    if task_id == parent_task_id:
+        return True
+    by_id = {str(task.get("taskId") or ""): task for task in payload.get("tasks", [])}
+    seen: set[str] = set()
+    current = parent_task_id
+    while current:
+        if current == task_id:
+            return True
+        if current in seen:
+            return True
+        seen.add(current)
+        current = str((by_id.get(current) or {}).get("parentTaskId") or "")
+    return False
+
+
+def apply_route_metadata(task: dict[str, Any], route: dict[str, Any]) -> None:
+    if not route:
+        return
+    status = normalize_routing_status(str(route.get("routeStatus") or route.get("routingStatus") or ""))
+    if status:
+        task["routingStatus"] = status
+    if route.get("routingConfidence") is not None:
+        with contextlib.suppress(TypeError, ValueError):
+            task["routingConfidence"] = round(float(route.get("routingConfidence")), 3)
+    if route.get("routingNeedsReview") is not None:
+        task["routingNeedsReview"] = bool(route.get("routingNeedsReview"))
+    evidence = normalized_note_list(route.get("routingEvidence") or [], limit=20, max_len=240)
+    if evidence:
+        task["routingEvidence"] = unique_normalized_nonempty([*task.get("routingEvidence", []), *evidence], limit=30)
+    candidates = route.get("routingCandidates")
+    if candidates:
+        task["routingCandidates"] = candidates[:5]
+
+
+def route_allows_git_snapshot_refresh(manager: "SidecarManager", task: dict[str, Any], args: argparse.Namespace, route: dict[str, Any] | None) -> bool:
+    if task.get("_isNewTask"):
+        return True
+    current_path = resolved_path_text(str(manager.git.worktree_path))
+    task_path = str(task.get("worktreePath") or "")
+    if task_path and resolved_path_text(task_path) != current_path:
+        return False
+    current_branch = str(manager.git.branch or "")
+    task_branch = str(task.get("branch") or "")
+    if task_branch and current_branch and task_branch != current_branch:
+        return False
+    if route and route.get("routeStatus") in {"inferred", "mismatch", "ambiguous"} and getattr(args, "task_id", None):
+        return False
+    return True
 
 
 def build_validation_record(args: argparse.Namespace, existing: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1184,6 +1484,16 @@ class SidecarManager:
         return {
             "taskId": self.task_id_for_branch(),
             "status": "active",
+            "parentTaskId": "",
+            "phase": "",
+            "threadRole": "",
+            "threadLabel": "",
+            "threadPurpose": "",
+            "routingStatus": "confirmed" if self.git.is_git_worktree else "provisional",
+            "routingConfidence": 1.0 if self.git.is_git_worktree else 0.3,
+            "routingEvidence": ["created from current Git worktree"] if self.git.is_git_worktree else ["created from non-Git path"],
+            "routingNeedsReview": not self.git.is_git_worktree,
+            "routingCandidates": [],
             "goal": "",
             "branch": self.git.branch,
             "baseBranch": self.git.base_branch,
@@ -1215,10 +1525,13 @@ class SidecarManager:
         args: argparse.Namespace,
         *,
         default_status: str = "active",
+        route: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         tasks = payload.setdefault("tasks", [])
+        is_new_task = task is None
         if task is None:
             task = self.default_task()
+            task["_isNewTask"] = True
             tasks.append(task)
 
         if getattr(args, "task_id", None):
@@ -1229,6 +1542,41 @@ class SidecarManager:
             task["status"] = args.status
         elif not task.get("status"):
             task["status"] = default_status
+        parent_task_id = normalize_optional_slug(getattr(args, "parent_task_id", None))
+        if parent_task_id:
+            if parent_would_cycle(payload, task.get("taskId", ""), parent_task_id):
+                raise SystemExit(f"invalid parentTaskId would create a cycle: {parent_task_id}")
+            task["parentTaskId"] = parent_task_id
+            if not task_id_exists(payload, parent_task_id):
+                task["parentTaskMissing"] = True
+        elif "parentTaskId" not in task:
+            task["parentTaskId"] = ""
+        phase = normalize_phase(getattr(args, "phase", None))
+        if phase:
+            task["phase"] = phase
+        else:
+            task.setdefault("phase", "")
+        thread_role = normalize_thread_role(getattr(args, "thread_role", None))
+        if thread_role:
+            task["threadRole"] = thread_role
+        else:
+            task.setdefault("threadRole", "")
+        if getattr(args, "thread_label", None) is not None:
+            task["threadLabel"] = short_text(args.thread_label, max_len=120)
+        else:
+            task.setdefault("threadLabel", "")
+        if getattr(args, "thread_purpose", None) is not None:
+            task["threadPurpose"] = short_text(args.thread_purpose, max_len=320)
+        else:
+            task.setdefault("threadPurpose", "")
+        if route:
+            apply_route_metadata(task, route)
+        else:
+            task.setdefault("routingStatus", "confirmed")
+            task.setdefault("routingConfidence", 1.0)
+            task.setdefault("routingEvidence", [])
+            task.setdefault("routingNeedsReview", False)
+            task.setdefault("routingCandidates", [])
         if getattr(args, "goal", None) is not None:
             task["goal"] = short_text(args.goal)
         if getattr(args, "next_step", None) is not None:
@@ -1278,15 +1626,26 @@ class SidecarManager:
         else:
             task.setdefault("validation", {"commands": [], "results": [], "notes": "", "validatedAt": ""})
 
-        task["branch"] = self.git.branch
-        task["baseBranch"] = self.git.base_branch
-        task["worktreePath"] = str(self.git.worktree_path)
-        task["repoRoot"] = str(self.git.repo_root)
-        task["headSha"] = self.git.head_sha
-        task["upstream"] = self.git.upstream
-        task["dirtyFiles"] = self.git.dirty_files
-        task["dirtyFingerprint"] = self.git.dirty_fingerprint
+        if route_allows_git_snapshot_refresh(self, task, args, route):
+            task["branch"] = self.git.branch
+            task["baseBranch"] = self.git.base_branch
+            task["worktreePath"] = str(self.git.worktree_path)
+            task["repoRoot"] = str(self.git.repo_root)
+            task["headSha"] = self.git.head_sha
+            task["upstream"] = self.git.upstream
+            task["dirtyFiles"] = self.git.dirty_files
+            task["dirtyFingerprint"] = self.git.dirty_fingerprint
+        else:
+            task.setdefault("branch", self.git.branch)
+            task.setdefault("baseBranch", self.git.base_branch)
+            task.setdefault("worktreePath", str(self.git.worktree_path))
+            task.setdefault("repoRoot", str(self.git.repo_root))
+            task.setdefault("headSha", "")
+            task.setdefault("upstream", "")
+            task.setdefault("dirtyFiles", [])
+            task.setdefault("dirtyFingerprint", "")
         task["updatedAt"] = now_iso()
+        task.pop("_isNewTask", None)
         return task
 
     def handoff_path_for(self, task: dict[str, Any]) -> Path:
@@ -1349,6 +1708,12 @@ def build_handoff_markdown(task: dict[str, Any], args: argparse.Namespace, manag
         f"## {tr(language, 'meta')}",
         f"- {tr(language, 'goal')}: {task.get('goal') or tr(language, 'goal_not_recorded')}",
         f"- {tr(language, 'status')}: {task.get('status') or 'active'}",
+        f"- Parent Task: {task.get('parentTaskId') or tr(language, 'none')}",
+        f"- Phase: {task.get('phase') or tr(language, 'none')}",
+        f"- Thread Role: {task.get('threadRole') or tr(language, 'none')}",
+        f"- Thread Label: {task.get('threadLabel') or tr(language, 'none')}",
+        f"- Thread Purpose: {task.get('threadPurpose') or tr(language, 'none')}",
+        f"- Routing: {task.get('routingStatus') or tr(language, 'none')} (needsReview={bool_label(bool(task.get('routingNeedsReview')))}, confidence={task.get('routingConfidence', tr(language, 'none'))})",
         f"- {tr(language, 'branch')}: {task.get('branch') or manager.git.branch}",
         f"- {tr(language, 'base_branch')}: {task.get('baseBranch') or manager.git.base_branch}",
         f"- {tr(language, 'worktree')}: {task.get('worktreePath') or str(manager.git.worktree_path)}",
@@ -2118,10 +2483,10 @@ def build_eval_report_markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-VISUAL_ACTIVE_STATUSES = {"active", "paused", "blocked", "review"}
+VISUAL_ACTIVE_STATUSES = {"active", "paused", "blocked", "review", "validation"}
 VISUAL_LEGEND = {
     "healthy": "handoff, validation, safety rules, clean worktree, current snapshot, and no blocker",
-    "attention": "needs a light follow-up such as dirty worktree, recommended action, missing alias, or minor missing field",
+    "attention": "needs a light follow-up such as dirty worktree, recommended action, inferred routing review, missing alias, or minor missing field",
     "blocked": "blocked status, blocker, stale snapshot, or missing handoff/validation/safety rules",
     "archived": "archived context shown only when includeArchive is enabled",
 }
@@ -2135,8 +2500,11 @@ VISUAL_TEXT = {
         "legend": "Legend",
         "details": "Details",
         "task": "Task",
+        "parent_task": "Parent Task",
+        "phase": "Phase",
         "worktree": "Worktree",
         "thread_role": "Thread Role",
+        "routing": "Routing",
         "health": "Health",
         "handoff": "Handoff",
         "validation": "Validation",
@@ -2245,12 +2613,16 @@ def visual_health_for_row(row: dict[str, Any]) -> str:
         or not row.get("safetyRulesPresent")
     ):
         return "blocked"
-    if row.get("dirty") or row.get("recommendedAction") or not row.get("aliases"):
+    if row.get("dirty") or row.get("recommendedAction") or row.get("routingNeedsReview") or not row.get("aliases"):
         return "attention"
     return "healthy"
 
 
 def thread_role_for_row(row: dict[str, Any]) -> str:
+    if row.get("threadLabel"):
+        return str(row.get("threadLabel"))
+    if row.get("threadRole"):
+        return str(row.get("threadRole"))
     status = row.get("taskStatus", "")
     if status == "archived":
         return "archived execution"
@@ -2279,6 +2651,15 @@ def base_visual_row_from_task(task: dict[str, Any], *, archived: bool = False) -
         "branch": task.get("branch", ""),
         "worktreePath": task.get("worktreePath", ""),
         "threadRole": "archived execution" if archived else "primary execution",
+        "threadLabel": task.get("threadLabel", ""),
+        "threadPurpose": task.get("threadPurpose", ""),
+        "parentTaskId": task.get("parentTaskId", ""),
+        "phase": task.get("phase", ""),
+        "routingStatus": task.get("routingStatus", ""),
+        "routingConfidence": task.get("routingConfidence", None),
+        "routingNeedsReview": bool(task.get("routingNeedsReview", False)),
+        "routingEvidence": task.get("routingEvidence", []),
+        "routingCandidates": task.get("routingCandidates", []),
         "taskStatus": status,
         "health": "archived" if archived else "attention",
         "handoffAvailable": handoff_available,
@@ -2324,6 +2705,16 @@ def build_visual_project_payload(manager: SidecarManager, include_archive: bool,
             row = worktree_audit_row(item, audit, wt_manager)
             task = audit.get("task") or {}
             row["aliases"] = task.get("aliases", [])
+            row["parentTaskId"] = task.get("parentTaskId", "")
+            row["phase"] = task.get("phase", "")
+            row["threadRole"] = task.get("threadRole", "")
+            row["threadLabel"] = task.get("threadLabel", "")
+            row["threadPurpose"] = task.get("threadPurpose", "")
+            row["routingStatus"] = task.get("routingStatus", "")
+            row["routingConfidence"] = task.get("routingConfidence", None)
+            row["routingNeedsReview"] = bool(task.get("routingNeedsReview", False))
+            row["routingEvidence"] = task.get("routingEvidence", [])
+            row["routingCandidates"] = task.get("routingCandidates", [])
             row["threadRole"] = thread_role_for_row(row)
             row["handoffPath"] = audit.get("handoffPath", "")
             rows.append(row)
@@ -2331,29 +2722,37 @@ def build_visual_project_payload(manager: SidecarManager, include_archive: bool,
             errors.append({"worktreePath": path, "error": short_text(str(exc), max_len=500)})
 
     worktree_paths = {str(Path(row["worktreePath"]).resolve()) for row in rows if row.get("worktreePath")}
+    covered_task_ids = {str(row.get("taskId") or "") for row in rows if row.get("taskId")}
     active_tasks = [task for task in tasks if task.get("status", "active") in VISUAL_ACTIVE_STATUSES]
     active_without_worktree: list[dict[str, Any]] = []
     for task in active_tasks:
+        task_id = str(task.get("taskId") or "")
+        if task_id in covered_task_ids:
+            continue
         raw_path = str(task.get("worktreePath") or "")
         resolved = str(Path(raw_path).resolve()) if raw_path else ""
-        if raw_path and resolved in worktree_paths:
-            continue
-        active_without_worktree.append(
-            {
-                "taskId": task.get("taskId", ""),
-                "branch": task.get("branch", ""),
-                "worktreePath": raw_path,
-                "status": task.get("status", ""),
-                "updatedAt": task.get("updatedAt", ""),
-            }
-        )
+        has_worktree = bool(raw_path and resolved in worktree_paths)
+        if not has_worktree:
+            active_without_worktree.append(
+                {
+                    "taskId": task.get("taskId", ""),
+                    "branch": task.get("branch", ""),
+                    "worktreePath": raw_path,
+                    "status": task.get("status", ""),
+                    "updatedAt": task.get("updatedAt", ""),
+                }
+            )
         task_copy = dict(task)
         task_copy["_handoffPath"] = str(manager.handoff_path_for(task)) if task.get("taskId") else ""
         task_copy["_handoffAvailable"] = bool(task_copy["_handoffPath"] and Path(task_copy["_handoffPath"]).exists())
         row = base_visual_row_from_task(task_copy)
-        row["recommendedAction"] = "active task points to a missing worktree"
-        row["recommendedActionType"] = "cleanup-or-recover-missing-worktree"
-        row["health"] = "blocked" if row.get("taskStatus") == "blocked" or not row.get("handoffAvailable") else "attention"
+        if has_worktree:
+            row["recommendedAction"] = ""
+            row["recommendedActionType"] = ""
+        else:
+            row["recommendedAction"] = "active task points to a missing worktree"
+            row["recommendedActionType"] = "cleanup-or-recover-missing-worktree"
+            row["health"] = "blocked" if row.get("taskStatus") == "blocked" or not row.get("handoffAvailable") else "attention"
         rows.append(row)
 
     recommended_actions, _, cleanup_prompts = build_hub_action_prompts(manager, rows, active_without_worktree, language)
@@ -2381,6 +2780,15 @@ def build_visual_project_payload(manager: SidecarManager, include_archive: bool,
                 "branch": row.get("branch", ""),
                 "worktreePath": row.get("worktreePath", ""),
                 "threadRole": row.get("threadRole", "primary execution"),
+                "threadLabel": row.get("threadLabel", ""),
+                "threadPurpose": row.get("threadPurpose", ""),
+                "parentTaskId": row.get("parentTaskId", ""),
+                "phase": row.get("phase", ""),
+                "routingStatus": row.get("routingStatus", ""),
+                "routingConfidence": row.get("routingConfidence", None),
+                "routingNeedsReview": bool(row.get("routingNeedsReview", False)),
+                "routingEvidence": row.get("routingEvidence", []),
+                "routingCandidates": row.get("routingCandidates", []),
                 "taskStatus": row.get("taskStatus", ""),
                 "health": row.get("health", "attention"),
                 "handoffAvailable": bool(row.get("handoffAvailable")),
@@ -2424,6 +2832,8 @@ def build_visual_project_payload(manager: SidecarManager, include_archive: bool,
     for row in task_rows:
         task_key = row.get("taskId") or row.get("branch") or row.get("worktreePath") or "unknown"
         task_id = visual_node_id("task", str(task_key))
+        parent_task_key = str(row.get("parentTaskId") or "").strip()
+        parent_task_id = visual_node_id("task", parent_task_key) if parent_task_key else ""
         worktree_path = str(row.get("worktreePath") or "")
         worktree_label = Path(worktree_path).name if worktree_path else "missing worktree"
         worktree_id = visual_node_id("worktree", worktree_path or str(task_key))
@@ -2440,13 +2850,29 @@ def build_visual_project_payload(manager: SidecarManager, include_archive: bool,
             },
             {"id": role_id, "type": "threadRole", "label": role, "health": row.get("health", "attention"), "details": {"taskId": task_key, "role": role}},
         ]
+        if parent_task_key:
+            parent_details = {"taskId": parent_task_key, "childrenInView": [task_key], "type": "parentTask"}
+            node_specs.insert(
+                0,
+                {
+                    "id": parent_task_id,
+                    "type": "task",
+                    "label": short_text(parent_task_key, max_len=40),
+                    "health": row.get("health", "attention"),
+                    "details": parent_details,
+                },
+            )
         for spec in node_specs:
             if spec["id"] not in seen_nodes:
                 nodes.append(spec)
                 seen_nodes.add(spec["id"])
+        if parent_task_key:
+            edges.append({"from": project_node["id"], "to": parent_task_id, "label": "has task"})
+            edges.append({"from": parent_task_id, "to": task_id, "label": "child task"})
+        else:
+            edges.append({"from": project_node["id"], "to": task_id, "label": "has task"})
         edges.extend(
             [
-                {"from": project_node["id"], "to": task_id, "label": "has task"},
                 {"from": task_id, "to": worktree_id, "label": "uses"},
                 {"from": worktree_id, "to": role_id, "label": "owned by"},
             ]
@@ -2464,6 +2890,7 @@ def build_visual_project_payload(manager: SidecarManager, include_archive: bool,
             or ("missing validation" if not row.get("validationPresent") else "")
             or ("missing safety rules" if not row.get("safetyRulesPresent") else "")
             or ("dirty worktree" if row.get("dirty") else "")
+            or ("routing needs review" if row.get("routingNeedsReview") else "")
             or ("missing alias" if not row.get("aliases") else "")
         )
         needs_attention.append(
@@ -2571,8 +2998,8 @@ def build_visual_project_markdown(report: dict[str, Any]) -> str:
             "",
             f"## {visual_text(language, 'details')}",
             "",
-            f"| {visual_text(language, 'task')} | {visual_text(language, 'worktree')} | {visual_text(language, 'thread_role')} | {visual_text(language, 'health')} | {visual_text(language, 'handoff')} | {visual_text(language, 'validation')} | {visual_text(language, 'safety')} | {visual_text(language, 'dirty_stale')} | {visual_text(language, 'action')} |",
-            "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+            f"| {visual_text(language, 'task')} | {visual_text(language, 'parent_task')} | {visual_text(language, 'phase')} | {visual_text(language, 'worktree')} | {visual_text(language, 'thread_role')} | {visual_text(language, 'routing')} | {visual_text(language, 'health')} | {visual_text(language, 'handoff')} | {visual_text(language, 'validation')} | {visual_text(language, 'safety')} | {visual_text(language, 'dirty_stale')} | {visual_text(language, 'action')} |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
         ]
     )
     for row in report.get("taskRows", []):
@@ -2582,8 +3009,11 @@ def build_visual_project_markdown(report: dict[str, Any]) -> str:
             + " | ".join(
                 [
                     markdown_cell(row.get("taskId") or row.get("branch") or "unknown"),
+                    markdown_cell(row.get("parentTaskId", "")),
+                    markdown_cell(row.get("phase", "")),
                     markdown_cell(Path(str(row.get("worktreePath") or "")).name or visual_text(language, "missing")),
                     markdown_cell(row.get("threadRole", "")),
+                    markdown_cell(f"{row.get('routingStatus') or 'none'}; review={bool_label(bool(row.get('routingNeedsReview')))}"),
                     markdown_cell(row.get("health", "")),
                     markdown_cell(bool_label(bool(row.get("handoffAvailable")))),
                     markdown_cell(bool_label(bool(row.get("validationPresent")))),
@@ -2723,6 +3153,13 @@ def score_task_candidate(manager: SidecarManager, task: dict[str, Any], query: s
         "worktreePath": task.get("worktreePath", ""),
         "goal": task.get("goal", ""),
         "status": task.get("status", "active"),
+        "parentTaskId": task.get("parentTaskId", ""),
+        "phase": task.get("phase", ""),
+        "threadRole": task.get("threadRole", ""),
+        "threadLabel": task.get("threadLabel", ""),
+        "threadPurpose": task.get("threadPurpose", ""),
+        "routingStatus": task.get("routingStatus", ""),
+        "routingNeedsReview": bool(task.get("routingNeedsReview", False)),
         "confidence": round(confidence, 3),
         "matchedFields": matched_fields,
     }
@@ -2750,14 +3187,23 @@ def resolve_task_from_manager(manager: SidecarManager, query: str, language: str
             for item in candidates[:3]
         ]
         question = tr(language, "resolver_disambiguation", query=query, candidates=", ".join(names))
+    routing_status = "confirmed" if clearly_best else ("ambiguous" if candidates else "provisional")
     return {
         "resolved": clearly_best,
         "confidence": top_score if top else 0.0,
+        "routingStatus": routing_status,
+        "routingConfidence": top_score if top else 0.0,
+        "routingNeedsReview": not clearly_best,
+        "routingEvidence": [
+            f"query matched {field.get('field')} with score {field.get('score')}"
+            for field in (top.get("matchedFields", []) if top else [])[:3]
+        ],
         "taskId": top.get("taskId", "") if top else "",
         "branch": top.get("branch", "") if top else "",
         "worktreePath": top.get("worktreePath", "") if top else "",
         "matchedFields": top.get("matchedFields", []) if top else [],
         "candidates": candidates[:5],
+        "routingCandidates": candidates[:5] if not clearly_best else [],
         "disambiguationQuestion": question,
     }
 
@@ -3031,6 +3477,10 @@ def cmd_start_feature(args: argparse.Namespace) -> int:
         print(json.dumps(guarded_non_git_write_response(manager, "start-feature"), ensure_ascii=False, indent=2))
         return 0
     payload = manager.load_active_tasks()
+    route = route_guard_for_write(manager, payload, args, "start-feature")
+    if route.get("routeStatus") in {"mismatch", "ambiguous"}:
+        print(json.dumps({"projectId": manager.project_id, "action": "start-feature", **route}, ensure_ascii=False, indent=2))
+        return 0
     tasks = payload.get("tasks", [])
     branch_matches = [item for item in tasks if item.get("branch") == manager.git.branch]
     worktree_matches = [item for item in tasks if item.get("worktreePath") == str(manager.git.worktree_path)]
@@ -3057,10 +3507,13 @@ def cmd_start_feature(args: argparse.Namespace) -> int:
         )
         print(json.dumps(snapshot, ensure_ascii=False, indent=2))
         return 0
-    task = candidates[0] if candidates else None
-    conflicts = [item.get("taskId", "<unknown>") for item in candidates[1:]]
+    explicit_task_id = bool(getattr(args, "task_id", None))
+    task = task_by_id(manager, payload, slugify(args.task_id)) if explicit_task_id else None
+    if task is None and not explicit_task_id:
+        task = candidates[0] if candidates else None
+    conflicts = [] if explicit_task_id else [item.get("taskId", "<unknown>") for item in candidates[1:]]
     sidecar_hit = task is not None
-    task = manager.upsert_task(payload, task, args)
+    task = manager.upsert_task(payload, task, args, route=route)
     manager.save_active_tasks(payload)
     snapshot = manager.task_snapshot(task, conflicts)
     manager.log_event(
@@ -3110,6 +3563,61 @@ def cmd_alias_task(args: argparse.Namespace) -> int:
                 "taskId": task.get("taskId", ""),
                 "aliases": aliases,
                 "removedAliases": [item for item in before if normalized_dedupe_key(item) in remove_keys],
+                "conflicts": conflicts,
+                "activeTasksPath": str(manager.active_tasks_path),
+                "repoMutated": False,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0
+
+
+def cmd_attach_thread(args: argparse.Namespace) -> int:
+    started_at = time.perf_counter()
+    manager = make_manager(args)
+    if not manager.git.is_git_worktree and not allow_non_git_worktree(args):
+        print(json.dumps(guarded_non_git_write_response(manager, "attach-thread"), ensure_ascii=False, indent=2))
+        return 0
+    payload = manager.load_active_tasks()
+    route = route_guard_for_write(manager, payload, args, "attach-thread")
+    if route.get("routeStatus") in {"mismatch", "ambiguous"}:
+        print(json.dumps({"projectId": manager.project_id, "action": "attach-thread", **route}, ensure_ascii=False, indent=2))
+        return 0
+    task = task_by_id(manager, payload, slugify(args.task_id)) if getattr(args, "task_id", None) else None
+    conflicts: list[str] = []
+    if task is None:
+        task, conflicts = manager.find_task(payload)
+    sidecar_hit = task is not None
+    task = manager.upsert_task(payload, task, args, route=route)
+    manager.save_active_tasks(payload)
+    manager.log_event(
+        "attach-thread",
+        task_id=task.get("taskId", ""),
+        started_at=started_at,
+        sidecar_hit=sidecar_hit,
+        handoff_available=manager.handoff_path_for(task).exists(),
+        threadRole=task.get("threadRole", ""),
+        phase=task.get("phase", ""),
+        routingStatus=task.get("routingStatus", ""),
+        routingNeedsReview=bool(task.get("routingNeedsReview", False)),
+    )
+    print(
+        json.dumps(
+            {
+                "projectId": manager.project_id,
+                "taskId": task.get("taskId", ""),
+                "parentTaskId": task.get("parentTaskId", ""),
+                "phase": task.get("phase", ""),
+                "threadRole": task.get("threadRole", ""),
+                "threadLabel": task.get("threadLabel", ""),
+                "threadPurpose": task.get("threadPurpose", ""),
+                "routingStatus": task.get("routingStatus", ""),
+                "routingConfidence": task.get("routingConfidence", None),
+                "routingNeedsReview": bool(task.get("routingNeedsReview", False)),
+                "routingEvidence": task.get("routingEvidence", []),
+                "routingCandidates": task.get("routingCandidates", []),
                 "conflicts": conflicts,
                 "activeTasksPath": str(manager.active_tasks_path),
                 "repoMutated": False,
@@ -3226,6 +3734,15 @@ def cmd_resume_query(args: argparse.Namespace) -> int:
         "projectId": resolved_manager.project_id,
         "projectResolution": project_resolution,
         "taskId": task.get("taskId", ""),
+        "parentTaskId": task.get("parentTaskId", ""),
+        "phase": task.get("phase", ""),
+        "threadRole": task.get("threadRole", ""),
+        "threadLabel": task.get("threadLabel", ""),
+        "threadPurpose": task.get("threadPurpose", ""),
+        "routingStatus": task.get("routingStatus", resolution.get("routingStatus", "")),
+        "routingConfidence": task.get("routingConfidence", resolution.get("routingConfidence", resolution.get("confidence", 0.0))),
+        "routingNeedsReview": bool(task.get("routingNeedsReview", resolution.get("routingNeedsReview", False))),
+        "routingEvidence": task.get("routingEvidence", resolution.get("routingEvidence", [])),
         "branch": resolved_manager.git.branch,
         "worktreePath": str(resolved_manager.git.worktree_path),
         "cd": str(resolved_manager.git.worktree_path),
@@ -3458,6 +3975,16 @@ def worktree_audit_row(worktree_info: dict[str, str], audit: dict[str, Any], man
         "sidecarHit": sidecar_hit,
         "taskId": task.get("taskId", ""),
         "taskStatus": task.get("status", "") if sidecar_hit else "missing",
+        "parentTaskId": task.get("parentTaskId", ""),
+        "phase": task.get("phase", ""),
+        "threadRole": task.get("threadRole", ""),
+        "threadLabel": task.get("threadLabel", ""),
+        "threadPurpose": task.get("threadPurpose", ""),
+        "routingStatus": task.get("routingStatus", ""),
+        "routingConfidence": task.get("routingConfidence", None),
+        "routingNeedsReview": bool(task.get("routingNeedsReview", False)),
+        "routingEvidence": task.get("routingEvidence", []),
+        "routingCandidates": task.get("routingCandidates", []),
         "handoffAvailable": bool(checks.get("handoffAvailable")),
         "validationPresent": bool(checks.get("validationPresent")),
         "safetyRulesPresent": bool(checks.get("safetyRulesPresent")),
@@ -3744,9 +4271,15 @@ def cmd_handoff(args: argparse.Namespace) -> int:
         return 0
     language = resolve_language(args, manager)
     payload = manager.load_active_tasks()
-    task, _ = manager.find_task(payload)
+    route = route_guard_for_write(manager, payload, args, "handoff")
+    if route.get("routeStatus") in {"mismatch", "ambiguous"}:
+        print(json.dumps({"projectId": manager.project_id, "action": "handoff", **route}, ensure_ascii=False, indent=2))
+        return 0
+    task = task_by_id(manager, payload, slugify(args.task_id)) if getattr(args, "task_id", None) else None
+    if task is None:
+        task, _ = manager.find_task(payload)
     sidecar_hit = task is not None
-    task = manager.upsert_task(payload, task, args)
+    task = manager.upsert_task(payload, task, args, route=route)
 
     handoff_path = manager.handoff_path_for(task)
     handoff_content = build_handoff_markdown(task, args, manager, language)
@@ -3772,6 +4305,8 @@ def cmd_handoff(args: argparse.Namespace) -> int:
                 "projectId": manager.project_id,
                 "taskId": task["taskId"],
                 "status": task["status"],
+                "routingStatus": task.get("routingStatus", ""),
+                "routingNeedsReview": bool(task.get("routingNeedsReview", False)),
                 "handoffPath": str(handoff_path),
                 "activeTasksPath": str(manager.active_tasks_path),
                 "updatedAt": task["updatedAt"],
@@ -4160,6 +4695,13 @@ def build_parser() -> argparse.ArgumentParser:
     def add_task_update_args(subparser: argparse.ArgumentParser) -> None:
         subparser.add_argument("--task-id")
         subparser.add_argument("--status", choices=sorted(VALID_STATUSES))
+        subparser.add_argument("--parent-task-id")
+        subparser.add_argument("--phase")
+        subparser.add_argument("--thread-role")
+        subparser.add_argument("--thread-label")
+        subparser.add_argument("--thread-purpose")
+        subparser.add_argument("--confirm-route", action="store_true")
+        subparser.add_argument("--routing-evidence", action="append")
         subparser.add_argument("--goal")
         subparser.add_argument("--alias", dest="aliases", action="append")
         subparser.add_argument("--next-step")
@@ -4216,6 +4758,11 @@ def build_parser() -> argparse.ArgumentParser:
     alias_parser.add_argument("--alias", dest="aliases", action="append", help="Alias to add. Can be repeated.")
     alias_parser.add_argument("--remove-alias", dest="remove_aliases", action="append", help="Alias to remove. Can be repeated.")
     alias_parser.set_defaults(func=cmd_alias_task)
+
+    attach_parser = subparsers.add_parser("attach-thread", help="Attach thread metadata, parent task, phase, and routing review fields to a task")
+    add_common(attach_parser)
+    add_task_update_args(attach_parser)
+    attach_parser.set_defaults(func=cmd_attach_thread)
 
     resolve_parser = subparsers.add_parser("resolve-task", help="Resolve a natural-language query to a sidecar task")
     add_common(resolve_parser)
