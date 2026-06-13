@@ -63,6 +63,9 @@ This compatibility entrypoint supports the same V2.8 routing actions as `$agent-
 - Use `resume-feature` only when the user explicitly says `当前 worktree`, `this worktree`, or otherwise clearly means the already-selected Git worktree.
 - Use `resolve-task --query "<user phrase>"` when routing without resuming.
 - If `resolved: false`, ask the returned `disambiguationQuestion` once instead of guessing.
+- If the user says this thread is an execution, validation, review, dogfood, discussion, or explainer process for a named task, use `resume-query` first and then `attach-thread` when the sidecar needs a durable `threadRole`, `threadLabel`, `threadPurpose`, `parentTaskId`, or `phase`.
+- If handoff text or user instructions mention a branch, task id, or worktree path that differs from the current cwd, respect those hints. Do not write a handoff to the cwd task unless the route is explicitly confirmed. When the CLI returns `routingStatus: mismatch` or `ambiguous`, explain the route conflict and ask or rerun with the correct worktree/task.
+- Treat `routingStatus: inferred` and `routingNeedsReview: true` as visible audit state: mention it briefly and do not describe the relationship as user-confirmed.
 - `resume-feature` and `resume-query` restore recorded workflow state; they do not prove correctness or replace validation, PR review, or targeted investigation.
 - Persist only user-confirmed aliases with `start-feature --alias`, `handoff --alias`, or `alias-task --alias`. Generated aliases participate in matching but are not written to task `aliases`.
 - The resolver is local and deterministic: normalized strings, token overlap, and `difflib`; no LLMs, embeddings, vectors, UI, MCP, or thread API.
@@ -140,6 +143,7 @@ You are an Explainer Thread for <project>. Repo/worktree: <path>. Explain <topic
 
 - `start-feature`: Create or update the active task for the current branch/worktree. Use when the user starts a new feature or says what this branch is for.
 - `alias-task`: Add or remove user-confirmed task aliases. Use when a user names a durable nickname for a task.
+- `attach-thread`: Attach a thread role, label, purpose, parent task, phase, and routing review metadata to a sidecar task without requiring a code change.
 - `resolve-task`: Resolve a natural-language query to a sidecar task. Use when routing without resuming.
 - `resume-feature`: Recover compact task state, latest handoff availability, stable docs, git status, and next-step hints. Use when taking over or continuing a branch.
 - `resume-query`: Resolve a natural-language query and resume the matched worktree when confidence is high. Use when the user says "continue <nickname>".
@@ -197,6 +201,8 @@ Never infer that sidecar active tasks are the full worktree inventory.
 Prefer old execution threads for backfill when they exist, because they may still have semantic context that Git cannot recover. If no old execution thread exists, use `newExecutionThreadPrompt` to open a new Primary Execution Thread. The new thread must recover or initialize sidecar state, distinguish facts/inferences/unknowns, add validation/safety/nextStep, save a handoff, and report back to the Project Hub. The prompt should not micromanage the agent's investigation path: the agent may use code reading, commits, PRs, issues, tests, or targeted search as needed.
 
 For project visualization requests, run `visualize-project` instead of asking the user to name Mermaid or workflow graph internals. The graph should show the main chain `Project -> Task -> Worktree -> Thread Role`; state and health belong in badges/classes and the details table, not as default graph nodes.
+
+Task hierarchy is intentionally lightweight. Use `parentTaskId` for ownership when a feature has follow-up, validation, or bugfix child tasks. Do not invent dependencies or multiple parents; if a relationship is merely related but not owned, describe it in facts/inferences or next steps instead.
 
 ## Backfill Guidance
 

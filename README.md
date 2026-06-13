@@ -218,6 +218,10 @@ Project discovery records `canonicalRepoRoot`, `projectContainerRoots`, and `kno
 
 `start-feature` and `handoff` are guarded on non-Git paths. By default they refuse to create or update sidecar task state from a container directory and return guidance to use `resume-query` or a real worktree path. Use `--allow-non-git-worktree` only when the user explicitly wants to record a non-Git directory.
 
+V3.5 adds route guards and thread attachment metadata. Write actions inspect explicit task, branch, and worktree hints in the requested update. If those hints conflict with the current cwd, the CLI returns `routingStatus: "mismatch"` or `"ambiguous"` and does not silently write to the current branch task. When a route is inferred, sidecar records `routingStatus`, `routingConfidence`, `routingEvidence`, and `routingNeedsReview` so the hub UI can show that the relationship needs human review.
+
+Tasks can now have a lightweight parent/child relationship via `parentTaskId`. Children are derived by scanning tasks with that parent; the sidecar does not store `childrenTaskIds`, dependencies, or multiple parents. Optional `phase`, `threadRole`, `threadLabel`, and `threadPurpose` fields describe follow-up, validation, review, dogfood, or explainer threads without turning the hub into a full project-management system.
+
 ## Sidecar State
 
 Dynamic state is local-only and stays outside your repository:
@@ -251,6 +255,7 @@ Base branch can be overridden with `--base-branch dev`; the value is persisted i
 - `setup`: Create the local sidecar layout.
 - `start-feature`: Track the current branch/worktree as an active task.
 - `alias-task`: Add or remove human-friendly task aliases.
+- `attach-thread`: Attach thread role, label, purpose, parent task, phase, and routing review metadata to a sidecar task.
 - `resolve-task`: Resolve a natural-language query to a sidecar task without resuming.
 - `resume-feature`: Recover compact context, stale detection, and a `startThreadSummary`.
 - `resume-query`: Resolve a natural-language query, then run sidecar-first resume on the matched worktree when confidence is high.
