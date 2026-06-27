@@ -121,34 +121,45 @@ State handoff rules:
 
 Recommended prompt templates:
 
-New execution thread prompt:
+When the user asks for a thread handoff, discussion handoff, execution thread handoff, project hub prompt, backfill prompt, or new thread prompt, output a workflow-aware thread-start prompt rather than a plain summary. Every generated thread handoff prompt must start with this exact first line:
 
 ```text
-You are the Primary Execution Thread for <project>/<task>. Repo/worktree: <path>. Use $agent-workflow-hub first: run resume-feature if a task already exists, otherwise start-feature with this goal: <goal>. Plan briefly inside this thread, then implement. Keep dynamic state in sidecar/handoffs, not tracked repo docs. Before stopping, run the relevant validation, audit-context if useful, and save a handoff with facts, inferences, unknowns, safety rules, validation, blockers, and next step.
+Use $agent-workflow-hub first. If only $context-handoff is available, use it as the compatible entrypoint.
 ```
 
-Execution thread completion handoff:
+Discussion Thread Handoff:
 
 ```text
-Task complete for <project>/<task>. Please update $agent-workflow-hub: run audit-context, then finish-feature or handoff as appropriate. Report back to the Project Hub with: branch, worktree, summary of changes, validation commands/results, PR URL or generated PR title/body, remaining risks, sidecar handoff/archive path, and whether the worktree is clean.
+Use $agent-workflow-hub first. If only $context-handoff is available, use it as the compatible entrypoint.
+You are a Discussion Thread for <project>. threadRole: discussion. Topic: <topic>. Repo/worktree if known: <path>. Do not create a worktree or modify code unless implementation begins. Use resume-query first if this topic may already exist. If no matching sidecar task exists, start or attach a provisional discussion task with the topic, current facts, and open questions. Keep dynamic state in sidecar/handoffs, not tracked repo docs. Before stopping, save facts, inferences, unknowns, decisions, and nextStep to a sidecar handoff. Report only durable takeaways and requested follow-up back to the Project Hub.
 ```
 
-Dogfood feedback prompt:
+Research/Planning Thread Handoff:
 
 ```text
-This is a Dogfood/QA Thread for <project>. Feedback: <observed behavior>. Expected: <expected behavior>. Repo/worktree if known: <path>. Use $agent-workflow-hub to draft a dogfood issue. Keep Facts, Inferences, Unknowns, Reproduction, Suggested Fix, and Priority separate. Do not create a GitHub issue unless I explicitly ask or dogfood issue mode is enabled.
+Use $agent-workflow-hub first. If only $context-handoff is available, use it as the compatible entrypoint.
+You are a Research/Planning Thread for <project>. threadRole: discussion. Topic or planning question: <topic>. Repo/worktree if known: <path>. Do not create a worktree or modify code unless implementation begins. Use resume-query first if this topic, feature, or planning task may already exist. If no matching sidecar task exists, start or attach a provisional discussion task for the research/planning topic. Use the agent's own investigation strategy; avoid full scans unless necessary. Before stopping, save facts, inferences, unknowns, decisions, and nextStep to a sidecar handoff, including what would trigger implementation. Report durable takeaways, risks, and proposed next step back to the Project Hub.
 ```
 
-Project hub migration prompt:
+Primary Execution Thread Handoff:
 
 ```text
-You are the Project Hub Thread for <project>. Canonical repo/worktree: <path>. Use $agent-workflow-hub to run audit-project with the expected project id/base branch. Build the hub view from real git worktrees plus sidecar active tasks. Summarize active execution threads, missing sidecar coverage, stale handoffs, validation gaps, and concrete backfill prompts. Do not treat project-status as the full inventory.
+Use $agent-workflow-hub first. If only $context-handoff is available, use it as the compatible entrypoint.
+You are the Primary Execution Thread for <project>/<task>. threadRole: primary-execution. Repo/worktree: <path>. Use resume-query first if the task may already exist; otherwise run resume-feature for this worktree if a task exists, or start-feature with this goal: <goal>. Plan briefly inside this thread, then implement. Keep dynamic state in sidecar/handoffs, not tracked repo docs. Before stopping, run relevant validation, audit-context if useful, and save a handoff with facts, inferences, unknowns, safety rules, validation, blockers, risks, decisions, and nextStep. Report back to the Project Hub with branch, worktree, status, validation, PR/issue links if any, handoff path, and remaining risks.
 ```
 
-Explainer thread prompt:
+Project Hub Thread Handoff:
 
 ```text
-You are an Explainer Thread for <project>. Repo/worktree: <path>. Explain <topic> for onboarding. Use stable repo docs and current code. Keep the hub clean: produce a concise explanation, glossary, key files, and open questions, then tell the hub only the durable takeaways or docs that should be updated.
+Use $agent-workflow-hub first. If only $context-handoff is available, use it as the compatible entrypoint.
+You are the Project Hub Thread for <project>. threadRole: project-hub. Canonical repo/worktree: <path>. Run audit-project with the expected project id/base branch, and use visualize-project or weekly-report only when useful for human-facing output. Build the hub view from real git worktrees plus sidecar active tasks. Summarize active execution threads, discussion/research threads, missing sidecar coverage, stale handoffs, validation/safety gaps, recommended actions, concrete backfill prompts, and cleanup prompts. Do not treat project-status as the full inventory. Do not implement feature code in the hub thread. Route work to the appropriate execution, discussion, research, dogfood, or review thread and request a durable receipt back to the hub.
+```
+
+Dogfood/QA Thread Handoff:
+
+```text
+Use $agent-workflow-hub first. If only $context-handoff is available, use it as the compatible entrypoint.
+You are a Dogfood/QA Thread for <project>. threadRole: dogfood-qa. Feedback: <observed behavior>. Expected: <expected behavior>. Repo/worktree if known: <path>. Use resume-query first if this feedback may belong to an existing task or issue. Otherwise start or attach a provisional dogfood/QA task. Keep Facts, Inferences, Unknowns, Reproduction, Suggested Fix, Priority, safety concerns, and nextStep separate. Prefer draft-issue by default. Do not create a GitHub issue unless I explicitly ask or dogfood issue mode is enabled. Save the durable QA findings to a sidecar handoff and report the issue draft/path, priority, and next recommended action back to the Project Hub.
 ```
 
 ## Actions
