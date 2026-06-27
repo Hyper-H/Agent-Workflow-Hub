@@ -161,6 +161,7 @@ You are a Dogfood/QA Thread for <project>. threadRole: dogfood-qa. Feedback: <ob
 - `handoff`: Save incomplete work, next step, blockers, touched areas, facts, inferences, unknowns, validation commands/results/time, safety rules, and a concise thread summary.
 - `audit-context`: Check whether the current context is trustworthy before handoff/resume. It reports missing handoff, stale HEAD/dirty files, missing validation, missing safety rules, dirty worktree, and backfill prompts.
 - `audit-project`: Project hub inventory for all Git worktrees. It compares real `git worktree list` output with sidecar active tasks, audits every worktree, and reports untracked worktrees, stale tasks, missing validation/safety/handoff, recommended actions, execution-thread prompts, and cleanup prompts.
+- `rebaseline-project`: Safely refresh the current project hub/task baseline after many PRs or versions have merged. It inspects Git, active/archived sidecar tasks, recent merged PRs when `gh` is available, and audit-project-style findings. By default it only recommends changes; use `--update-current-hub-task` to write a fresh hub task/handoff and `--confirm-archive-stale` only after human confirmation to archive stale historical active tasks.
 - `finish-feature`: Finish and archive the active task. Create a PR only if the user explicitly asks and GitHub CLI is already installed and authenticated.
 - `project-status`: Return compact sidecar project state for planning. This is not the full Git worktree inventory.
 - `weekly-report`: Generate a human-facing Markdown report under the sidecar `reports/` directory and reply with a short notification, not the full report by default.
@@ -186,6 +187,7 @@ You are a Dogfood/QA Thread for <project>. threadRole: dogfood-qa. Feedback: <ob
 - If the user reports dogfood/debug feedback, prefer `draft-issue` by default and return the copyable title/body.
 - If the user explicitly says "create issue", "提 issue", or asks to enable dogfood issue mode, use `enable-dogfood-issue-mode` or `create-issue` as appropriate. Never create an issue from inferred intent alone.
 - If the user asks from a project hub thread, asks for all worktrees, asks what is active across the project, or mentions a canonical repo with many worktrees, use `audit-project` first. Use `project-status` only for compact sidecar state and `weekly-report` for a human update.
+- If the user says the project map is stale, the current project appears as an old version, many PRs were merged, or the sidecar baseline needs refresh, run `rebaseline-project` first. Do not archive stale tasks unless the user explicitly confirms; then use `--confirm-archive-stale`. Use `--update-current-hub-task` when the user wants the current hub baseline written.
 - If the user asks whether Agent Workflow Hub is helping, asks for dogfood/evaluation metrics, or asks for a tool-effectiveness report, run `eval-report`. Keep it distinct from `weekly-report`, which is project progress reporting.
 - If the user says `visualize project`, `show project graph`, `可视化项目`, `显示项目图`, `项目关系图`, or `看一下项目全局`, run `visualize-project`. Reply with the Mermaid graph, Legend, details table, and needs-attention summary from the generated Markdown; avoid pasting the full JSON unless asked.
 - If setup is uncertain, run `doctor` first. Explain any missing optional tools without installing them.
@@ -214,6 +216,8 @@ Prefer old execution threads for backfill when they exist, because they may stil
 For project visualization requests, run `visualize-project` instead of asking the user to name Mermaid or workflow graph internals. The graph should show the main chain `Project -> Task -> Worktree -> Thread Role`; state and health belong in badges/classes and the details table, not as default graph nodes.
 
 Task hierarchy is intentionally lightweight. Use `parentTaskId` for ownership when a feature has follow-up, validation, or bugfix child tasks. Do not invent dependencies or multiple parents; if a relationship is merely related but not owned, describe it in facts/inferences or next steps instead.
+
+Use `rebaseline-project` when stale historical sidecar tasks make the Project Hub or visualization misrepresent the current repo baseline. It must distinguish Git facts, inferred project baseline, user-confirmed changes, and stale historical sidecar records. It may recommend archiving stale active tasks, but destructive cleanup requires explicit human confirmation. It should refresh or create a current hub task such as `agent-workflow-hub-main` only when `--update-current-hub-task` is used, write a fresh handoff, and recommend `visualize-project` afterward.
 
 ## Backfill Guidance
 
