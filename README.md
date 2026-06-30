@@ -115,7 +115,16 @@ Use $agent-workflow-hub to generate this week's eval report.
 
 ## Multi-Thread Workflow Playbook
 
-V2.5 treats threads as workflow roles and the sidecar as their shared state layer. This is documentation and agent guidance only: it does not add CLI actions, change the sidecar schema, or require UI/MCP support.
+Agent Workflow Hub treats threads as workflow roles and the sidecar as their shared state layer. The default mental model is `Hub -> Discussion/Research -> Execution`. This is documentation and agent guidance only: it does not require UI/MCP support.
+
+Core roles users should remember:
+
+- `hub`: global status, task map, routing, prioritization, summaries, rebaseline, reports, and project-wide prompts.
+- `discussion`: engineering route, product direction, architecture tradeoffs, task shaping, and implementation readiness.
+- `research`: paper potential, novelty, related work direction, baselines, experiment design, and publication readiness.
+- `primary-execution`: implementation, bug fixing, local validation, task handoff, finish/archive, and PR text.
+
+Support roles remain available for structured sidecar/UI/audit state but are optional in the default workflow: `review`, `validation`, `dogfood`, and `explainer`.
 
 Default topology:
 
@@ -124,6 +133,7 @@ Default topology:
 - Create a new worktree when the task needs an isolated branch, parallel implementation, or a different base. Reuse the existing worktree when continuing the same task or doing tiny scratch work.
 - Repo-bound fuzzy tasks can start directly in an execution thread, plan there first, then implement.
 - Product-direction fuzzy tasks stay in the hub or a short-lived Discussion Thread until they become actionable.
+- Research-shaped questions use a Research Thread when the durable output is paper story, novelty, related work direction, baselines, experiment design, or publication readiness.
 - Side chats are for short questions, scratch wording, and throwaway drafts; copy only durable decisions back to the hub or execution thread.
 - Subagents are temporary helpers for review, investigation, comparison, or validation; they report findings back and do not own long-running tasks.
 - Explainer Threads handle deep project explanation or onboarding so the hub does not become a tutorial transcript.
@@ -137,6 +147,7 @@ Routing guidance:
 - Recommend a new worktree only when isolation, parallel work, or a separate branch/base is useful; otherwise continue in the current worktree.
 - If the task is fuzzy but clearly belongs to one repo/worktree, open the execution thread and plan inside it.
 - If the task is still about product direction, priority, or whether the idea should exist, keep it in the hub or a Discussion Thread.
+- If the task is about paper potential, novelty, related work, baselines, experiments, ablations, reviewer expectations, or publication readiness, use a Research Thread with `threadRole: research`.
 - Use a side chat for small non-durable questions.
 - Use a subagent for bounded research/review/validation with a narrow return-finding prompt.
 - Use an Explainer Thread for architecture/history/onboarding explanations.

@@ -20,7 +20,7 @@ from typing import Any
 
 VALID_STATUSES = {"active", "paused", "blocked", "review", "validation"}
 VALID_PHASES = {"implementation", "validation", "post-merge-validation", "follow-up", "bugfix"}
-VALID_THREAD_ROLES = {"primary-execution", "validation", "review", "discussion", "dogfood", "explainer", "hub"}
+VALID_THREAD_ROLES = {"hub", "primary-execution", "discussion", "research", "review", "validation", "dogfood", "explainer"}
 VALID_ROUTING_STATUSES = {"confirmed", "inferred", "ambiguous", "mismatch", "provisional"}
 SIDECAR_VERSION = 2
 GH_AUTH_STATUS_TIMEOUT_SECONDS = 15
@@ -539,10 +539,24 @@ def normalize_thread_role(value: str | None) -> str:
         return ""
     normalized = slugify(value)
     aliases = {
+        "project-hub": "hub",
+        "projecthub": "hub",
+        "hub-thread": "hub",
         "primary": "primary-execution",
         "execution": "primary-execution",
         "primary-execution-thread": "primary-execution",
+        "research-planning": "research",
+        "research-strategy": "research",
+        "paper-strategy": "research",
+        "paper-planning": "research",
+        "academic-research": "research",
+        "dogfood-qa": "dogfood",
+        "qa-thread": "dogfood",
+        "dogfood-thread": "dogfood",
         "validator": "validation",
+        "validation-thread": "validation",
+        "review-thread": "review",
+        "explainer-thread": "explainer",
         "qa": "validation",
     }
     normalized = aliases.get(normalized, normalized)
@@ -4113,6 +4127,225 @@ def build_hub_action_prompts(
     return recommended_actions, thread_prompts_by_branch, cleanup_prompts
 
 
+def recent_merged_prs(manager: SidecarManager, limit: int = 8) -> dict[str, Any]:
+    status = gh_status()
+    result: dict[str, Any] = {
+        "source": "gh pr list",
+        "available": bool(status.get("available")),
+        "authenticated": bool(status.get("authenticated")),
+        "prs": [],
+        "message": status.get("message", ""),
+    }
+    if not status.get("available") or not status.get("authenticated"):
+        return result
+    command = [
+        status["path"],
+        "pr",
+        "list",
+        "--state",
+        "merged",
+        "--limit",
+        str(limit),
+        "--json",
+        "number,title,url,mergedAt,headRefName,baseRefName",
+    ]
+    env = os.environ.copy()
+    env["GH_PROMPT_DISABLED"] = "1"
+    try:
+        proc = subprocess.run(
+            command,
+            cwd=str(manager.git.repo_root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            stdin=subprocess.DEVNULL,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        result["message"] = short_text(str(exc), max_len=300)
+        return result
+    if proc.returncode != 0 or suspicious_cli_output(proc.stdout + proc.stderr):
+        result["message"] = short_text("\n".join([proc.stdout.strip(), proc.stderr.strip()]).strip(), max_len=500)
+        return result
+    try:
+        parsed = json.loads(proc.stdout or "[]")
+    except json.JSONDecodeError as exc:
+        result["message"] = f"failed to parse gh PR JSON: {short_text(str(exc), max_len=200)}"
+        return result
+    if isinstance(parsed, list):
+        result["prs"] = parsed
+        result["message"] = "merged PRs collected"
+    return result
+
+
+def task_is_historical_baseline_candidate(manager: SidecarManager, task: dict[str, Any], hub_task_id: str) -> bool:
+    if task.get("taskId") == hub_task_id:
+        return False
+    task_path = str(task.get("worktreePath") or "")
+    task_repo = str(task.get("repoRoot") or "")
+    current_worktree = str(manager.git.worktree_path)
+    current_repo = str(manager.git.repo_root)
+    same_worktree = bool(task_path and resolved_path_text(task_path) == resolved_path_text(current_worktree))
+    same_repo = bool(task_repo and resolved_path_text(task_repo) == resolved_path_text(current_repo))
+    same_branch = bool(task.get("branch") and task.get("branch") == manager.git.branch)
+    hub_like = str(task.get("threadRole") or "") == "hub"
+    return same_worktree or same_repo or same_branch or hub_like
+
+
+def stale_historical_sidecar_records(manager: SidecarManager, tasks: list[dict[str, Any]], hub_task_id: str) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for task in tasks:
+        if task.get("status", "active") not in VALID_STATUSES:
+            continue
+        if not task_is_historical_baseline_candidate(manager, task, hub_task_id):
+            continue
+        stale = stale_detection(task, manager.git)
+        if not stale.get("isStale"):
+            continue
+        records.append(
+            {
+                "taskId": task.get("taskId", ""),
+                "status": task.get("status", "active"),
+                "branch": task.get("branch", ""),
+                "worktreePath": task.get("worktreePath", ""),
+                "threadRole": task.get("threadRole", ""),
+                "phase": task.get("phase", ""),
+                "updatedAt": task.get("updatedAt", ""),
+                "reasons": stale.get("reasons", []),
+                "recordedHeadSha": stale.get("recordedHeadSha", ""),
+                "currentHeadSha": stale.get("currentHeadSha", ""),
+                "recordedDirtyFingerprint": stale.get("recordedDirtyFingerprint", ""),
+                "currentDirtyFingerprint": stale.get("currentDirtyFingerprint", ""),
+            }
+        )
+    return records
+
+
+def audit_project_summary_for_rebaseline(manager: SidecarManager, payload: dict[str, Any], language: str) -> dict[str, Any]:
+    worktrees, worktree_error = parse_git_worktree_list(manager.git.repo_root)
+    rows: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    for item in worktrees:
+        path = item.get("path", "")
+        if not path:
+            continue
+        try:
+            wt_manager = SidecarManager(
+                Path(path),
+                project_id_override=manager.project_id,
+                base_branch_override=manager.git.base_branch,
+            )
+            audit = audit_context_payload(wt_manager, payload, language)
+            rows.append(worktree_audit_row(item, audit, wt_manager))
+        except Exception as exc:
+            errors.append({"worktreePath": path, "error": short_text(str(exc), max_len=500)})
+    active_tasks = [task for task in payload.get("tasks", []) if task.get("status", "active") in VALID_STATUSES]
+    summary = {
+        "gitWorktrees": len(worktrees),
+        "sidecarActiveTasks": len(active_tasks),
+        "staleTasks": sum(1 for row in rows if row.get("stale")),
+        "missingHandoff": sum(1 for row in rows if not row.get("handoffAvailable")),
+        "missingValidation": sum(1 for row in rows if not row.get("validationPresent")),
+        "missingSafetyRules": sum(1 for row in rows if not row.get("safetyRulesPresent")),
+        "dirtyWorktrees": sum(1 for row in rows if row.get("dirty")),
+        "worktreeAuditErrors": len(errors),
+    }
+    return {
+        "summaryCounts": summary,
+        "branchesNeedingBackfill": unique_nonempty(
+            [
+                row.get("branch", "")
+                for row in rows
+                if row.get("stale")
+                or not row.get("handoffAvailable")
+                or not row.get("validationPresent")
+                or not row.get("safetyRulesPresent")
+            ]
+        ),
+        "worktreeError": worktree_error,
+        "errors": errors,
+    }
+
+
+def rebaseline_hub_args(manager: SidecarManager, args: argparse.Namespace, payload: dict[str, Any], archived_count: int, stale_count: int) -> argparse.Namespace:
+    goal = (
+        args.goal
+        or "maintain Agent Workflow Hub as an agent-native development workflow layer for Codex worktrees"
+    )
+    next_step = (
+        args.next_step
+        or "Run visualize-project after rebaseline and use audit-project/rebaseline-project after major merges or stale sidecar signals."
+    )
+    command_text = "rebaseline-project --update-current-hub-task"
+    if args.confirm_archive_stale:
+        command_text += " --confirm-archive-stale"
+    facts = [
+        f"Current canonical repo is {manager.git.repo_root}.",
+        f"Current worktree is {manager.git.worktree_path}.",
+        f"Current branch is {manager.git.branch}.",
+        f"Current HEAD is {manager.git.head_sha or 'unknown'}.",
+        f"Active sidecar task count before rebaseline was {len(payload.get('tasks', []))}.",
+        f"Archived sidecar task count before rebaseline was {archived_count}.",
+        f"Detected {stale_count} stale historical sidecar record(s) before confirmed archival.",
+    ]
+    facts.extend([f"Recent commit: {commit}" for commit in manager.git.recent_commits[:3]])
+    return argparse.Namespace(
+        task_id=args.hub_task_id,
+        status="active",
+        parent_task_id="",
+        phase="follow-up",
+        thread_role="hub",
+        thread_label=args.thread_label or "Agent Workflow Hub project hub",
+        thread_purpose="Maintain the current project workflow baseline, task inventory, validation state, and follow-up routing.",
+        confirm_route=True,
+        routing_evidence=["project baseline explicitly refreshed by rebaseline-project"],
+        goal=goal,
+        aliases=["agent workflow hub main", "project hub", "current baseline"],
+        next_step=next_step,
+        blocker="",
+        thread_summary="Project baseline refreshed from current Git and sidecar state.",
+        pr_url="",
+        touched_areas=["skills", "sidecar", "project hub"],
+        facts=facts,
+        inferences=[
+            "Current project baseline should be represented by the hub task at the current canonical HEAD.",
+            "Stale historical sidecar records may reflect older merged or abandoned work and should not dominate project visualization.",
+        ],
+        unknowns=[
+            "Whether each stale historical sidecar task was merged, abandoned, or still needs recovery unless explicitly confirmed.",
+        ],
+        safety_rules=[
+            "Do not automatically delete worktrees or repository files during rebaseline.",
+            "Archive stale active sidecar tasks only when explicitly confirmed.",
+            "Keep dynamic workflow state under the local sidecar, not in the target repository.",
+        ],
+        validation_commands=[command_text],
+        validation_results=["rebaseline-project refreshed the current hub task and wrote a fresh handoff"],
+        validation_at=now_iso(),
+        validation_tests=None,
+        validation_manual=None,
+        validation_notes="Rebaseline is a workflow-state refresh, not proof of code correctness.",
+        current_objective=goal,
+        done=["Refreshed current project hub baseline from Git and sidecar state."],
+        not_done=["Run visualize-project and review stale historical records with human confirmation."],
+        risks=["Archiving stale sidecar tasks without human review could hide still-relevant work."],
+        key_files=[],
+        estimated_rebuild_minutes=None,
+        duplicate_scan=False,
+        first_step_correct=False,
+        notes="",
+    )
+
+
+def write_rebaseline_handoff(manager: SidecarManager, task: dict[str, Any], hub_args: argparse.Namespace, language: str) -> str:
+    handoff_path = manager.handoff_path_for(task)
+    with file_lock(handoff_path):
+        atomic_write_text(handoff_path, build_handoff_markdown(task, hub_args, manager, language))
+    return str(handoff_path)
+
+
 def cmd_audit_project(args: argparse.Namespace) -> int:
     started_at = time.perf_counter()
     manager = make_manager(args)
@@ -4258,6 +4491,130 @@ def cmd_audit_project(args: argparse.Namespace) -> int:
         sidecarActiveTasks=summary_counts["sidecarActiveTasks"],
         untrackedWorktrees=summary_counts["untrackedWorktrees"],
         staleTasks=summary_counts["staleTasks"],
+    )
+    print(json.dumps(output, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_rebaseline_project(args: argparse.Namespace) -> int:
+    started_at = time.perf_counter()
+    manager = make_manager(args)
+    if not manager.git.is_git_worktree and not allow_non_git_worktree(args):
+        print(json.dumps(guarded_non_git_write_response(manager, "rebaseline-project"), ensure_ascii=False, indent=2))
+        return 0
+    language = resolve_language(args, manager)
+    payload = manager.load_active_tasks()
+    tasks = payload.get("tasks", [])
+    active_before_count = len(tasks)
+    archived_before = load_archived_tasks(manager)
+    stale_records = stale_historical_sidecar_records(manager, tasks, args.hub_task_id)
+    audit_summary = audit_project_summary_for_rebaseline(manager, payload, language)
+    merged_prs = recent_merged_prs(manager, limit=args.pr_limit)
+
+    archived_results: list[dict[str, Any]] = []
+    if args.confirm_archive_stale and stale_records:
+        stale_ids = {record["taskId"] for record in stale_records}
+        for task in list(payload.get("tasks", [])):
+            if task.get("taskId") in stale_ids:
+                archived_results.append(
+                    archive_task(
+                        manager,
+                        payload,
+                        task,
+                        event="rebaseline-archive-stale",
+                        started_at=started_at,
+                    )
+                )
+        payload = manager.load_active_tasks()
+        tasks = payload.get("tasks", [])
+
+    hub_task = task_by_id(manager, payload, slugify(args.hub_task_id))
+    hub_handoff_path = ""
+    hub_updated = False
+    if args.update_current_hub_task:
+        hub_args = rebaseline_hub_args(manager, args, payload, len(archived_before), len(stale_records))
+        hub_task = manager.upsert_task(
+            payload,
+            hub_task,
+            hub_args,
+            route=route_result(
+                "confirmed",
+                routingNeedsReview=False,
+                routingEvidence=["project baseline explicitly refreshed by rebaseline-project"],
+            ),
+        )
+        hub_handoff_path = write_rebaseline_handoff(manager, hub_task, hub_args, language)
+        manager.save_active_tasks(payload)
+        hub_updated = True
+
+    recommendations = []
+    if stale_records and not args.confirm_archive_stale:
+        recommendations.append("Review staleHistoricalSidecarRecords and rerun with --confirm-archive-stale only after human confirmation.")
+    if not hub_updated:
+        recommendations.append("Rerun with --update-current-hub-task to create or refresh the current project hub baseline task and handoff.")
+    recommendations.append("Run visualize-project after rebaseline to verify the project map shows the current baseline task.")
+    if audit_summary.get("summaryCounts", {}).get("missingValidation"):
+        recommendations.append("Backfill validation for tasks that remain active after the baseline refresh.")
+    if audit_summary.get("summaryCounts", {}).get("missingSafetyRules"):
+        recommendations.append("Backfill safetyRules for tasks that remain active after the baseline refresh.")
+
+    output = {
+        "projectId": manager.project_id,
+        "action": "rebaseline-project",
+        "sidecarRoot": str(manager.sidecar_root),
+        "repoMutated": False,
+        "sidecarMutated": bool(archived_results or hub_updated),
+        "canonicalRepo": {
+            "worktree": str(manager.git.worktree_path),
+            "repoRoot": str(manager.git.repo_root),
+            "branch": manager.git.branch,
+            "headSha": manager.git.head_sha,
+            "upstream": manager.git.upstream,
+            "dirtyFiles": manager.git.dirty_files,
+            "dirtyFingerprint": manager.git.dirty_fingerprint,
+        },
+        "gitFacts": {
+            "recentCommits": manager.git.recent_commits,
+            "recentMergedPrs": merged_prs,
+        },
+        "inferredProjectBaseline": {
+            "taskId": args.hub_task_id,
+            "threadRole": "hub",
+            "threadLabel": args.thread_label or "Agent Workflow Hub project hub",
+            "phase": "follow-up",
+            "goal": args.goal or "maintain Agent Workflow Hub as an agent-native development workflow layer for Codex worktrees",
+            "worktreePath": str(manager.git.worktree_path),
+            "headSha": manager.git.head_sha,
+        },
+        "userConfirmedChanges": {
+            "archiveStaleConfirmed": bool(args.confirm_archive_stale),
+            "updateCurrentHubTaskConfirmed": bool(args.update_current_hub_task),
+            "archivedTaskIds": [item.get("taskId", "") for item in archived_results],
+            "updatedHubTaskId": hub_task.get("taskId", "") if hub_updated and hub_task else "",
+            "handoffPath": hub_handoff_path,
+        },
+        "staleHistoricalSidecarRecords": stale_records,
+        "activeTaskCountBefore": active_before_count,
+        "activeTaskCountAfter": len(payload.get("tasks", [])),
+        "archivedTaskCountBefore": len(archived_before),
+        "archivedByRebaseline": archived_results,
+        "auditProjectFindings": audit_summary,
+        "recommendations": unique_nonempty(recommendations),
+        "nextCommands": {
+            "visualizeProject": f"visualize-project --worktree {manager.git.worktree_path} --project-id {manager.project_id}",
+            "confirmArchiveStale": f"rebaseline-project --worktree {manager.git.worktree_path} --project-id {manager.project_id} --confirm-archive-stale --update-current-hub-task",
+            "updateCurrentHubTask": f"rebaseline-project --worktree {manager.git.worktree_path} --project-id {manager.project_id} --update-current-hub-task",
+        },
+    }
+    manager.log_event(
+        "rebaseline-project",
+        started_at=started_at,
+        sidecar_hit=True,
+        handoff_available=bool(hub_handoff_path),
+        scan_scope="project-rebaseline",
+        staleHistoricalTasks=len(stale_records),
+        archivedStaleTasks=len(archived_results),
+        hubTaskUpdated=hub_updated,
     )
     print(json.dumps(output, ensure_ascii=False, indent=2))
     return 0
@@ -4789,6 +5146,17 @@ def build_parser() -> argparse.ArgumentParser:
     audit_project_parser = subparsers.add_parser("audit-project", help="Audit all git worktrees for project hub inventory")
     add_common(audit_project_parser)
     audit_project_parser.set_defaults(func=cmd_audit_project)
+
+    rebaseline_parser = subparsers.add_parser("rebaseline-project", help="Refresh the current project hub baseline without blindly rewriting sidecar history")
+    add_common(rebaseline_parser)
+    rebaseline_parser.add_argument("--hub-task-id", default="agent-workflow-hub-main", help="Task id for the current project hub baseline.")
+    rebaseline_parser.add_argument("--thread-label", default="Agent Workflow Hub project hub", help="Thread label for the current hub task.")
+    rebaseline_parser.add_argument("--goal", default="maintain Agent Workflow Hub as an agent-native development workflow layer for Codex worktrees")
+    rebaseline_parser.add_argument("--next-step")
+    rebaseline_parser.add_argument("--pr-limit", type=int, default=8, help="Recent merged PRs to inspect when GitHub CLI is authenticated.")
+    rebaseline_parser.add_argument("--update-current-hub-task", action="store_true", help="Create or update the current project hub task and handoff.")
+    rebaseline_parser.add_argument("--confirm-archive-stale", action="store_true", help="Archive stale historical active sidecar tasks after human confirmation.")
+    rebaseline_parser.set_defaults(func=cmd_rebaseline_project)
 
     handoff_parser = subparsers.add_parser("handoff", help="Update the current task and write the latest handoff")
     add_common(handoff_parser)

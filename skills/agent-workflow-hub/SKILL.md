@@ -86,6 +86,17 @@ Project/container routing:
 
 Use this playbook when the user asks whether to open a new thread, worktree, subagent, side chat, or project hub. The goal is stable routing, not new infrastructure. Do not add CLI actions, change sidecar schema, or require UI/MCP support for these workflows.
 
+Default mental model: `Hub -> Discussion/Research -> Execution`.
+
+Core roles users should remember:
+
+- `hub`: global status, task map, routing, prioritization, summaries, rebaseline, reports, and project-wide prompts.
+- `discussion`: engineering route, product direction, architecture tradeoffs, task shaping, and implementation readiness.
+- `research`: paper potential, novelty, related work direction, baselines, experiment design, and publication readiness.
+- `primary-execution`: implementation, bug fixing, local validation, task handoff, finish/archive, and PR text.
+
+Support roles remain available for structured sidecar state but are optional in the default workflow: `review`, `validation`, `dogfood`, and `explainer`.
+
 Default topology:
 
 - One project has one Project Hub Thread. It owns the project map, whole-project status, worktree inventory, routing decisions, and periodic `audit-project` / `weekly-report` summaries.
@@ -93,6 +104,7 @@ Default topology:
 - Create a new worktree when the task needs an isolated branch, parallel implementation, or a different base. Reuse the existing worktree when continuing the same task or doing tiny scratch work that will not become durable.
 - A repo-bound but still fuzzy task can start directly in a Primary Execution Thread. Plan inside that thread first, then implement once the task is shaped.
 - A fuzzy product-direction task stays in the Project Hub Thread or a short-lived Discussion Thread until it becomes repo-bound and actionable.
+- A research-shaped question belongs in a Research Thread when the durable output is paper story, novelty, related work direction, baselines, experiment design, or publication readiness rather than immediate implementation.
 - Side chats are for short questions, scratch wording, or throwaway drafts. They should not become the canonical project memory.
 - Subagents are temporary helpers for review, investigation, comparison, or validation. They should report findings back to the primary or hub thread and should not become long-term task owners.
 - Explainer Threads are for deep project explanation or onboarding. Use them to avoid turning the hub into a long tutorial.
@@ -106,6 +118,7 @@ Routing rules:
 - If the user asks whether to open a worktree, recommend one only when isolation, parallel work, or a separate branch/base is useful; otherwise continue in the current worktree.
 - If the user has a task but the exact implementation path is fuzzy and it clearly belongs to one repo/worktree, create the execution thread anyway and start with planning in that thread.
 - If the user is still deciding product direction, user value, priority, or whether the task should exist, keep it in the hub or create a Discussion Thread.
+- If the user is asking about paper potential, novelty, related work, baselines, experiments, ablations, reviewer expectations, or publication readiness, use a Research Thread with `threadRole: research`.
 - If the question is small and does not need durable project memory, use a side chat and copy only final decisions back to the hub or execution thread when needed.
 - If independent review, targeted research, or validation would help, launch a subagent with a narrow question and an explicit "return findings only" instruction.
 - If the user wants a deep explanation of architecture, history, or onboarding, create an Explainer Thread and point it at stable docs plus the current repo.
@@ -134,11 +147,11 @@ Use $agent-workflow-hub first. If only $context-handoff is available, use it as 
 You are a Discussion Thread for <project>. threadRole: discussion. Topic: <topic>. Repo/worktree if known: <path>. Do not create a worktree or modify code unless implementation begins. Use resume-query first if this topic may already exist. If no matching sidecar task exists, start or attach a provisional discussion task with the topic, current facts, and open questions. Keep dynamic state in sidecar/handoffs, not tracked repo docs. Before stopping, save facts, inferences, unknowns, decisions, and nextStep to a sidecar handoff. Report only durable takeaways and requested follow-up back to the Project Hub.
 ```
 
-Research/Planning Thread Handoff:
+Research Thread Handoff:
 
 ```text
 Use $agent-workflow-hub first. If only $context-handoff is available, use it as the compatible entrypoint.
-You are a Research/Planning Thread for <project>. threadRole: discussion. Topic or planning question: <topic>. Repo/worktree if known: <path>. Do not create a worktree or modify code unless implementation begins. Use resume-query first if this topic, feature, or planning task may already exist. If no matching sidecar task exists, start or attach a provisional discussion task for the research/planning topic. Use the agent's own investigation strategy; avoid full scans unless necessary. Before stopping, save facts, inferences, unknowns, decisions, and nextStep to a sidecar handoff, including what would trigger implementation. Report durable takeaways, risks, and proposed next step back to the Project Hub.
+You are a Research Thread for <project>. threadRole: research. Research topic or paper question: <topic>. Repo/worktree if known: <path>. External academic, literature, reviewer, or paper-planning skills may be used if available. Do not create a worktree or modify code unless implementation begins. Use resume-query first if this research topic, feature, or paper-planning task may already exist. If no matching sidecar task exists, start or attach a provisional research task. Use the agent's own investigation strategy; avoid full scans unless necessary. Required output: engineering facts, paper story, research questions, related work directions/search keywords, novelty hypotheses, baselines, experiments/ablations, publication readiness, engineering tasks serving the paper, unknowns/risks, and next step. Save durable research findings to a sidecar handoff and report the paper-relevant takeaways, risks, and proposed next step back to the Project Hub.
 ```
 
 Primary Execution Thread Handoff:
@@ -152,14 +165,14 @@ Project Hub Thread Handoff:
 
 ```text
 Use $agent-workflow-hub first. If only $context-handoff is available, use it as the compatible entrypoint.
-You are the Project Hub Thread for <project>. threadRole: project-hub. Canonical repo/worktree: <path>. Run audit-project with the expected project id/base branch, and use visualize-project or weekly-report only when useful for human-facing output. Build the hub view from real git worktrees plus sidecar active tasks. Summarize active execution threads, discussion/research threads, missing sidecar coverage, stale handoffs, validation/safety gaps, recommended actions, concrete backfill prompts, and cleanup prompts. Do not treat project-status as the full inventory. Do not implement feature code in the hub thread. Route work to the appropriate execution, discussion, research, dogfood, or review thread and request a durable receipt back to the hub.
+You are the Project Hub Thread for <project>. threadRole: hub. Canonical repo/worktree: <path>. Run audit-project with the expected project id/base branch, and use visualize-project or weekly-report only when useful for human-facing output. Build the hub view from real git worktrees plus sidecar active tasks. Summarize active execution threads, discussion/research threads, missing sidecar coverage, stale handoffs, validation/safety gaps, recommended actions, concrete backfill prompts, and cleanup prompts. Do not treat project-status as the full inventory. Do not implement feature code in the hub thread. Route work to the appropriate execution, discussion, research, dogfood, or review thread and request a durable receipt back to the hub.
 ```
 
 Dogfood/QA Thread Handoff:
 
 ```text
 Use $agent-workflow-hub first. If only $context-handoff is available, use it as the compatible entrypoint.
-You are a Dogfood/QA Thread for <project>. threadRole: dogfood-qa. Feedback: <observed behavior>. Expected: <expected behavior>. Repo/worktree if known: <path>. Use resume-query first if this feedback may belong to an existing task or issue. Otherwise start or attach a provisional dogfood/QA task. Keep Facts, Inferences, Unknowns, Reproduction, Suggested Fix, Priority, safety concerns, and nextStep separate. Prefer draft-issue by default. Do not create a GitHub issue unless I explicitly ask or dogfood issue mode is enabled. Save the durable QA findings to a sidecar handoff and report the issue draft/path, priority, and next recommended action back to the Project Hub.
+You are a Dogfood/QA Thread for <project>. threadRole: dogfood. Feedback: <observed behavior>. Expected: <expected behavior>. Repo/worktree if known: <path>. Use resume-query first if this feedback may belong to an existing task or issue. Otherwise start or attach a provisional dogfood/QA task. Keep Facts, Inferences, Unknowns, Reproduction, Suggested Fix, Priority, safety concerns, and nextStep separate. Prefer draft-issue by default. Do not create a GitHub issue unless I explicitly ask or dogfood issue mode is enabled. Save the durable QA findings to a sidecar handoff and report the issue draft/path, priority, and next recommended action back to the Project Hub.
 ```
 
 ## Actions
@@ -173,6 +186,7 @@ You are a Dogfood/QA Thread for <project>. threadRole: dogfood-qa. Feedback: <ob
 - `handoff`: Save incomplete work, next step, blockers, touched areas, facts, inferences, unknowns, validation commands/results/time, safety rules, and a concise thread summary.
 - `audit-context`: Check whether the current context is trustworthy before handoff/resume. It reports missing handoff, stale HEAD/dirty files, missing validation, missing safety rules, dirty worktree, and backfill prompts.
 - `audit-project`: Project hub inventory for all Git worktrees. It compares real `git worktree list` output with sidecar active tasks, audits every worktree, and reports untracked worktrees, stale tasks, missing validation/safety/handoff, recommended actions, execution-thread prompts, and cleanup prompts.
+- `rebaseline-project`: Safely refresh the current project hub/task baseline after many PRs or versions have merged. It inspects Git, active/archived sidecar tasks, recent merged PRs when `gh` is available, and audit-project-style findings. By default it only recommends changes; use `--update-current-hub-task` to write a fresh hub task/handoff and `--confirm-archive-stale` only after human confirmation to archive stale historical active tasks.
 - `finish-feature`: Finish and archive the active task. Create a PR only if the user explicitly asks and GitHub CLI is already installed and authenticated.
 - `project-status`: Return compact sidecar project state for planning. This is not the full Git worktree inventory.
 - `weekly-report`: Generate a human-facing Markdown report under the sidecar `reports/` directory and reply with a short notification, not the full report by default.
@@ -198,6 +212,7 @@ You are a Dogfood/QA Thread for <project>. threadRole: dogfood-qa. Feedback: <ob
 - If the user reports dogfood/debug feedback, prefer `draft-issue` by default and return the copyable title/body.
 - If the user explicitly says "create issue", "提 issue", or asks to enable dogfood issue mode, use `enable-dogfood-issue-mode` or `create-issue` as appropriate. Never create an issue from inferred intent alone.
 - If the user asks from a project hub thread, asks for all worktrees, asks what is active across the project, or mentions a canonical repo with many worktrees, use `audit-project` first. Use `project-status` only for compact sidecar state and `weekly-report` for a human update.
+- If the user says the project map is stale, the current project appears as an old version, many PRs were merged, or the sidecar baseline needs refresh, run `rebaseline-project` first. Do not archive stale tasks unless the user explicitly confirms; then use `--confirm-archive-stale`. Use `--update-current-hub-task` when the user wants the current hub baseline written.
 - If the user asks whether Agent Workflow Hub is helping, asks for dogfood/evaluation metrics, or asks for a tool-effectiveness report, run `eval-report`. Keep it distinct from `weekly-report`, which is project progress reporting.
 - If the user says `visualize project`, `show project graph`, `可视化项目`, `显示项目图`, `项目关系图`, or `看一下项目全局`, run `visualize-project`. Reply with the Mermaid graph, Legend, details table, and needs-attention summary from the generated Markdown; avoid pasting the full JSON unless asked.
 - If setup is uncertain, run `doctor` first. Explain any missing optional tools without installing them.
@@ -226,6 +241,8 @@ Prefer old execution threads for backfill when they exist, because they may stil
 For project visualization requests, run `visualize-project` instead of asking the user to name Mermaid or workflow graph internals. The graph should show the main chain `Project -> Task -> Worktree -> Thread Role`; state and health belong in badges/classes and the details table, not as default graph nodes.
 
 Task hierarchy is intentionally lightweight. Use `parentTaskId` for ownership when a feature has follow-up, validation, or bugfix child tasks. Do not invent dependencies or multiple parents; if a relationship is merely related but not owned, describe it in facts/inferences or next steps instead.
+
+Use `rebaseline-project` when stale historical sidecar tasks make the Project Hub or visualization misrepresent the current repo baseline. It must distinguish Git facts, inferred project baseline, user-confirmed changes, and stale historical sidecar records. It may recommend archiving stale active tasks, but destructive cleanup requires explicit human confirmation. It should refresh or create a current hub task such as `agent-workflow-hub-main` only when `--update-current-hub-task` is used, write a fresh handoff, and recommend `visualize-project` afterward.
 
 ## Backfill Guidance
 
