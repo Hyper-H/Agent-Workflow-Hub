@@ -2518,6 +2518,7 @@ VISUAL_TEXT = {
         "phase": "Phase",
         "worktree": "Worktree",
         "thread_role": "Thread Role",
+        "thread_label": "Thread Label",
         "routing": "Routing",
         "health": "Health",
         "handoff": "Handoff",
@@ -2550,6 +2551,7 @@ VISUAL_TEXT = {
         "task": "任务",
         "worktree": "Worktree",
         "thread_role": "线程角色",
+        "thread_label": "线程标签",
         "health": "健康度",
         "handoff": "Handoff",
         "validation": "Validation",
@@ -2633,16 +2635,18 @@ def visual_health_for_row(row: dict[str, Any]) -> str:
 
 
 def thread_role_for_row(row: dict[str, Any]) -> str:
-    if row.get("threadLabel"):
-        return str(row.get("threadLabel"))
     if row.get("threadRole"):
         return str(row.get("threadRole"))
     status = row.get("taskStatus", "")
     if status == "archived":
-        return "archived execution"
+        return "primary-execution"
     if status == "review":
-        return "review/discussion"
-    return "primary execution"
+        return "review"
+    return "primary-execution"
+
+
+def thread_display_label_for_row(row: dict[str, Any]) -> str:
+    return str(row.get("threadLabel") or row.get("threadRole") or thread_role_for_row(row))
 
 
 def load_archived_tasks(manager: SidecarManager) -> list[dict[str, Any]]:
@@ -2664,7 +2668,7 @@ def base_visual_row_from_task(task: dict[str, Any], *, archived: bool = False) -
         "taskId": task.get("taskId", ""),
         "branch": task.get("branch", ""),
         "worktreePath": task.get("worktreePath", ""),
-        "threadRole": "archived execution" if archived else "primary execution",
+        "threadRole": task.get("threadRole", "") or "primary-execution",
         "threadLabel": task.get("threadLabel", ""),
         "threadPurpose": task.get("threadPurpose", ""),
         "parentTaskId": task.get("parentTaskId", ""),
@@ -2730,6 +2734,7 @@ def build_visual_project_payload(manager: SidecarManager, include_archive: bool,
             row["routingEvidence"] = task.get("routingEvidence", [])
             row["routingCandidates"] = task.get("routingCandidates", [])
             row["threadRole"] = thread_role_for_row(row)
+            row["threadDisplayLabel"] = thread_display_label_for_row(row)
             row["handoffPath"] = audit.get("handoffPath", "")
             rows.append(row)
         except Exception as exc:
@@ -2788,13 +2793,15 @@ def build_visual_project_payload(manager: SidecarManager, include_archive: bool,
             row["recommendedActionType"] = action.get("recommendedActionType", "")
         row["health"] = visual_health_for_row(row)
         row["threadRole"] = thread_role_for_row(row)
+        row["threadDisplayLabel"] = thread_display_label_for_row(row)
         task_rows.append(
             {
                 "taskId": row.get("taskId", "") or row.get("branch", "") or Path(str(row.get("worktreePath") or "")).name or "unknown",
                 "branch": row.get("branch", ""),
                 "worktreePath": row.get("worktreePath", ""),
-                "threadRole": row.get("threadRole", "primary execution"),
+                "threadRole": row.get("threadRole", "primary-execution"),
                 "threadLabel": row.get("threadLabel", ""),
+                "threadDisplayLabel": row.get("threadDisplayLabel", "") or row.get("threadLabel", "") or row.get("threadRole", ""),
                 "threadPurpose": row.get("threadPurpose", ""),
                 "parentTaskId": row.get("parentTaskId", ""),
                 "phase": row.get("phase", ""),
@@ -2837,7 +2844,7 @@ def build_visual_project_payload(manager: SidecarManager, include_archive: bool,
             "sidecarRoot": str(manager.sidecar_root),
             "canonicalRepoRoot": str(manager.git.repo_root),
             "baseBranch": manager.git.base_branch,
-            "threadRole": "project hub",
+            "threadRole": "hub",
         },
     }
     nodes: list[dict[str, Any]] = [project_node]
@@ -2851,7 +2858,8 @@ def build_visual_project_payload(manager: SidecarManager, include_archive: bool,
         worktree_path = str(row.get("worktreePath") or "")
         worktree_label = Path(worktree_path).name if worktree_path else "missing worktree"
         worktree_id = visual_node_id("worktree", worktree_path or str(task_key))
-        role = str(row.get("threadRole") or "primary execution")
+        role = str(row.get("threadRole") or "primary-execution")
+        role_label = str(row.get("threadDisplayLabel") or row.get("threadLabel") or role)
         role_id = visual_node_id("role", f"{task_key}:{role}")
         node_specs = [
             {"id": task_id, "type": "task", "label": short_text(str(task_key), max_len=40), "health": row.get("health", "attention"), "details": row},
@@ -2862,7 +2870,13 @@ def build_visual_project_payload(manager: SidecarManager, include_archive: bool,
                 "health": row.get("health", "attention"),
                 "details": {"worktreePath": worktree_path, "branch": row.get("branch", ""), "dirty": row.get("dirty", False), "stale": row.get("stale", False)},
             },
-            {"id": role_id, "type": "threadRole", "label": role, "health": row.get("health", "attention"), "details": {"taskId": task_key, "role": role}},
+            {
+                "id": role_id,
+                "type": "threadRole",
+                "label": role_label,
+                "health": row.get("health", "attention"),
+                "details": {"taskId": task_key, "threadRole": role, "threadLabel": row.get("threadLabel", ""), "displayLabel": role_label},
+            },
         ]
         if parent_task_key:
             parent_details = {"taskId": parent_task_key, "childrenInView": [task_key], "type": "parentTask"}
@@ -3012,8 +3026,8 @@ def build_visual_project_markdown(report: dict[str, Any]) -> str:
             "",
             f"## {visual_text(language, 'details')}",
             "",
-            f"| {visual_text(language, 'task')} | {visual_text(language, 'parent_task')} | {visual_text(language, 'phase')} | {visual_text(language, 'worktree')} | {visual_text(language, 'thread_role')} | {visual_text(language, 'routing')} | {visual_text(language, 'health')} | {visual_text(language, 'handoff')} | {visual_text(language, 'validation')} | {visual_text(language, 'safety')} | {visual_text(language, 'dirty_stale')} | {visual_text(language, 'action')} |",
-            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+            f"| {visual_text(language, 'task')} | {visual_text(language, 'parent_task')} | {visual_text(language, 'phase')} | {visual_text(language, 'worktree')} | {visual_text(language, 'thread_role')} | {visual_text(language, 'thread_label')} | {visual_text(language, 'routing')} | {visual_text(language, 'health')} | {visual_text(language, 'handoff')} | {visual_text(language, 'validation')} | {visual_text(language, 'safety')} | {visual_text(language, 'dirty_stale')} | {visual_text(language, 'action')} |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
         ]
     )
     for row in report.get("taskRows", []):
@@ -3027,6 +3041,7 @@ def build_visual_project_markdown(report: dict[str, Any]) -> str:
                     markdown_cell(row.get("phase", "")),
                     markdown_cell(Path(str(row.get("worktreePath") or "")).name or visual_text(language, "missing")),
                     markdown_cell(row.get("threadRole", "")),
+                    markdown_cell(row.get("threadLabel", "")),
                     markdown_cell(f"{row.get('routingStatus') or 'none'}; review={bool_label(bool(row.get('routingNeedsReview')))}"),
                     markdown_cell(row.get("health", "")),
                     markdown_cell(bool_label(bool(row.get("handoffAvailable")))),
