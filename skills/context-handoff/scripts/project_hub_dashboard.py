@@ -1056,7 +1056,11 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
     }
 
     function rowThreadKey(row, index) {
-      return `${rowTaskKey(row, index)}:${row.threadRole || "primary execution"}`;
+      return `${rowTaskKey(row, index)}:${row.threadRole || "primary-execution"}`;
+    }
+
+    function rowThreadLabel(row) {
+      return row.threadDisplayLabel || row.threadLabel || row.threadRole || "primary-execution";
     }
 
     function buildGraph(sourceRows) {
@@ -1101,7 +1105,7 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
           threadMap.set(threadKey, {
             type: "thread",
             key: threadKey,
-            label: row.threadRole || "primary execution",
+            label: rowThreadLabel(row),
             health: row.health || "attention",
             status: row.health || "attention",
             rows: []
@@ -1291,12 +1295,14 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
         const selected = state.selectedKey === node.key;
         const dimmed = related.size > 1 && !related.has(node.key);
         const worktrees = unique(node.rows.map((row) => row.worktreePath || "missing worktree")).map(shortPath).join(" / ");
-        const threads = unique(node.rows.map((row) => row.threadRole || "primary execution")).join(" / ");
+        const threads = unique(node.rows.map((row) => row.threadRole || "primary-execution")).join(" / ");
+        const threadLabels = unique(node.rows.map(rowThreadLabel)).join(" / ");
         return `
           <button class="route-card ${selected ? "selected" : ""} ${dimmed ? "dimmed" : ""}" type="button" data-type="task" data-key="${escapeAttr(node.key)}">
             <span class="node-main"><b>${escapeHtml(node.label)}</b><span class="status-pill ${statusClass(healthForNode(node))}">${escapeHtml(healthForNode(node))}</span></span>
             <span>worktreePath: ${escapeHtml(worktrees || "none")}</span>
             <span>thread role: ${escapeHtml(threads || "none")}</span>
+            <span>thread label: ${escapeHtml(threadLabels || "none")}</span>
           </button>
         `;
       }).join("");
@@ -1441,6 +1447,7 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
       const branches = unique(node.rows.map((row) => row.branch));
       const worktreePaths = unique(node.rows.map((row) => row.worktreePath));
       const threadRoles = unique(node.rows.map((row) => row.threadRole));
+      const threadLabels = unique(node.rows.map((row) => row.threadLabel));
       const nextSteps = unique(node.rows.map((row) => row.nextStep));
       const blockers = unique(node.rows.map((row) => row.blocker));
       const actions = unique(node.rows.map((row) => row.recommendedAction));
@@ -1460,6 +1467,7 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
           ["branch", branches.join(" / ")],
           ["worktreePath", worktreePaths.join(" / ")],
           ["thread role", threadRoles.join(" / ")],
+          ["thread label", threadLabels.join(" / ")],
           ["dirty/stale", `dirty=${boolText(dirty)}, stale=${boolText(stale)}`],
           ["handoff", boolText(handoff)],
           ["validation", boolText(validation)],
@@ -1478,12 +1486,12 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
     function buildPrompt(node) {
       const first = node.rows[0] || {};
       if (node.type === "task") {
-        return `Resume task ${first.taskId || node.label}. Check branches ${unique(node.rows.map((row) => row.branch)).join(", ") || "unknown"}, worktrees ${unique(node.rows.map((row) => row.worktreePath)).join(", ") || "none"}, and thread roles ${unique(node.rows.map((row) => row.threadRole)).join(", ") || "none"}. Preserve handoff, validation, and safetyRules before editing.`;
+        return `Resume task ${first.taskId || node.label}. Check branches ${unique(node.rows.map((row) => row.branch)).join(", ") || "unknown"}, worktrees ${unique(node.rows.map((row) => row.worktreePath)).join(", ") || "none"}, and canonical thread roles ${unique(node.rows.map((row) => row.threadRole)).join(", ") || "none"}. Preserve handoff, validation, and safetyRules before editing.`;
       }
       if (node.type === "worktree") {
         return `Audit worktree ${first.worktreePath || node.label}. Check dirty=${Boolean(first.dirty)}, stale=${Boolean(first.stale)}, handoff, validation, safetyRules, nextStep, and blocker before resuming related tasks.`;
       }
-      return `Resume thread role ${first.threadRole || node.label} for task ${first.taskId || "unknown"}. Report taskId, status, handoffPath, nextStep, blocker, validation, and risks back to th-project-hub.`;
+      return `Resume canonical thread role ${first.threadRole || "primary-execution"}${first.threadLabel ? ` (${first.threadLabel})` : ""} for task ${first.taskId || "unknown"}. Report taskId, status, handoffPath, nextStep, blocker, validation, and risks back to th-project-hub.`;
     }
 
     function renderActions() {
