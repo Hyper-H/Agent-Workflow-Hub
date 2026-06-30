@@ -115,7 +115,16 @@ Use $agent-workflow-hub to generate this week's eval report.
 
 ## 多 Thread Workflow Playbook
 
-V2.5 把不同 thread 固化为 workflow 角色，把 sidecar 作为它们之间的共享状态层。这只是文档和 agent 指南：不新增 CLI action，不改变 sidecar schema，也不要求 UI/MCP 支持。
+Agent Workflow Hub 把不同 thread 固化为 workflow 角色，把 sidecar 作为它们之间的共享状态层。默认心智模型是 `Hub -> Discussion/Research -> Execution`。这只是文档和 agent 指南，不要求 UI/MCP 支持。
+
+用户主要需要记住 4 个 core roles：
+
+- `hub`：全局状态、任务地图、路由、优先级、摘要、rebaseline、报告和项目级 prompt。
+- `discussion`：工程路线、产品方向、架构取舍、任务塑形和实现准备度。
+- `research`：论文潜力、novelty、related work 方向、baseline、实验设计和投稿准备度。
+- `primary-execution`：实现、bugfix、本地验证、task handoff、finish/archive 和 PR 文案。
+
+Support roles 仍保留给结构化 sidecar/UI/audit 状态，但默认工作流不要求用户记住：`review`、`validation`、`dogfood`、`explainer`。
 
 默认拓扑：
 
@@ -124,6 +133,7 @@ V2.5 把不同 thread 固化为 workflow 角色，把 sidecar 作为它们之间
 - 当任务需要隔离 branch、并行实现或不同 base 时，创建新 worktree；继续同一任务或很小的一次性草稿时，复用当前 worktree。
 - 模糊但确定会落到某个 repo/worktree 的 task，可以直接开 execution thread，在里面先 plan 再实现。
 - 模糊且产品方向不确定的 task，留在 hub 或开短期 Discussion Thread，直到它变成可执行任务。
+- 研究型问题进入 Research Thread，尤其是产出论文 story、novelty、related work 方向、baseline、实验设计或投稿准备度，而不是立即实现时。
 - Side chat 用于短问题、草稿措辞、一次性推敲；只把稳定决策复制回 hub 或 execution thread。
 - Subagent 用于临时 review、调查、对比或验证；它只回传 findings，不作为长期 task owner。
 - Explainer Thread 用于深入项目讲解或 onboarding，避免把 hub 变成长教程。
@@ -137,6 +147,7 @@ V2.5 把不同 thread 固化为 workflow 角色，把 sidecar 作为它们之间
 - 只有隔离、并行工作或独立 branch/base 有价值时，才建议新 worktree；否则继续当前 worktree。
 - task 还模糊但明显属于某个 repo/worktree 时，直接开 execution thread，并先在里面 plan。
 - task 仍在讨论产品方向、优先级或是否值得做时，留在 hub 或 Discussion Thread。
+- task 关注论文潜力、novelty、related work、baseline、实验、ablation、审稿预期或投稿准备度时，用 Research Thread，并记录 `threadRole: research`。
 - 小问题且不需要长期记忆时，用 side chat。
 - 需要独立 review、调查或验证时，用 subagent，并给它窄问题和只返回 findings 的要求。
 - 需要讲清架构、历史或 onboarding 时，用 Explainer Thread。

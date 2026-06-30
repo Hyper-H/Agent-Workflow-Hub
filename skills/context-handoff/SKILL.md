@@ -74,6 +74,17 @@ This compatibility entrypoint supports the same V2.8 routing actions as `$agent-
 
 Use this playbook when the user asks whether to open a new thread, worktree, subagent, side chat, or project hub. The goal is stable routing, not new infrastructure. Do not add CLI actions, change sidecar schema, or require UI/MCP support for these workflows.
 
+Default mental model: `Hub -> Discussion/Research -> Execution`.
+
+Core roles users should remember:
+
+- `hub`: global status, task map, routing, prioritization, summaries, rebaseline, reports, and project-wide prompts.
+- `discussion`: engineering route, product direction, architecture tradeoffs, task shaping, and implementation readiness.
+- `research`: paper potential, novelty, related work direction, baselines, experiment design, and publication readiness.
+- `primary-execution`: implementation, bug fixing, local validation, task handoff, finish/archive, and PR text.
+
+Support roles remain available for structured sidecar state but are optional in the default workflow: `review`, `validation`, `dogfood`, and `explainer`.
+
 Default topology:
 
 - One project has one Project Hub Thread. It owns the project map, whole-project status, worktree inventory, routing decisions, and periodic `audit-project` / `weekly-report` summaries.
@@ -81,6 +92,7 @@ Default topology:
 - Create a new worktree when the task needs an isolated branch, parallel implementation, or a different base. Reuse the existing worktree when continuing the same task or doing tiny scratch work that will not become durable.
 - A repo-bound but still fuzzy task can start directly in a Primary Execution Thread. Plan inside that thread first, then implement once the task is shaped.
 - A fuzzy product-direction task stays in the Project Hub Thread or a short-lived Discussion Thread until it becomes repo-bound and actionable.
+- A research-shaped question belongs in a Research Thread when the durable output is paper story, novelty, related work direction, baselines, experiment design, or publication readiness rather than immediate implementation.
 - Side chats are for short questions, scratch wording, or throwaway drafts. They should not become the canonical project memory.
 - Subagents are temporary helpers for review, investigation, comparison, or validation. They should report findings back to the primary or hub thread and should not become long-term task owners.
 - Explainer Threads are for deep project explanation or onboarding. Use them to avoid turning the hub into a long tutorial.
@@ -94,6 +106,7 @@ Routing rules:
 - If the user asks whether to open a worktree, recommend one only when isolation, parallel work, or a separate branch/base is useful; otherwise continue in the current worktree.
 - If the user has a task but the exact implementation path is fuzzy and it clearly belongs to one repo/worktree, create the execution thread anyway and start with planning in that thread.
 - If the user is still deciding product direction, user value, priority, or whether the task should exist, keep it in the hub or create a Discussion Thread.
+- If the user is asking about paper potential, novelty, related work, baselines, experiments, ablations, reviewer expectations, or publication readiness, use a Research Thread with `threadRole: research`.
 - If the question is small and does not need durable project memory, use a side chat and copy only final decisions back to the hub or execution thread when needed.
 - If independent review, targeted research, or validation would help, launch a subagent with a narrow question and an explicit "return findings only" instruction.
 - If the user wants a deep explanation of architecture, history, or onboarding, create an Explainer Thread and point it at stable docs plus the current repo.
@@ -122,11 +135,11 @@ Use $agent-workflow-hub first. If only $context-handoff is available, use it as 
 You are a Discussion Thread for <project>. threadRole: discussion. Topic: <topic>. Repo/worktree if known: <path>. Do not create a worktree or modify code unless implementation begins. Use resume-query first if this topic may already exist. If no matching sidecar task exists, start or attach a provisional discussion task with the topic, current facts, and open questions. Keep dynamic state in sidecar/handoffs, not tracked repo docs. Before stopping, save facts, inferences, unknowns, decisions, and nextStep to a sidecar handoff. Report only durable takeaways and requested follow-up back to the Project Hub.
 ```
 
-Research/Planning Thread Handoff:
+Research Thread Handoff:
 
 ```text
 Use $agent-workflow-hub first. If only $context-handoff is available, use it as the compatible entrypoint.
-You are a Research/Planning Thread for <project>. threadRole: discussion. Topic or planning question: <topic>. Repo/worktree if known: <path>. Do not create a worktree or modify code unless implementation begins. Use resume-query first if this topic, feature, or planning task may already exist. If no matching sidecar task exists, start or attach a provisional discussion task for the research/planning topic. Use the agent's own investigation strategy; avoid full scans unless necessary. Before stopping, save facts, inferences, unknowns, decisions, and nextStep to a sidecar handoff, including what would trigger implementation. Report durable takeaways, risks, and proposed next step back to the Project Hub.
+You are a Research Thread for <project>. threadRole: research. Research topic or paper question: <topic>. Repo/worktree if known: <path>. External academic, literature, reviewer, or paper-planning skills may be used if available. Do not create a worktree or modify code unless implementation begins. Use resume-query first if this research topic, feature, or paper-planning task may already exist. If no matching sidecar task exists, start or attach a provisional research task. Use the agent's own investigation strategy; avoid full scans unless necessary. Required output: engineering facts, paper story, research questions, related work directions/search keywords, novelty hypotheses, baselines, experiments/ablations, publication readiness, engineering tasks serving the paper, unknowns/risks, and next step. Save durable research findings to a sidecar handoff and report the paper-relevant takeaways, risks, and proposed next step back to the Project Hub.
 ```
 
 Primary Execution Thread Handoff:
@@ -140,14 +153,14 @@ Project Hub Thread Handoff:
 
 ```text
 Use $agent-workflow-hub first. If only $context-handoff is available, use it as the compatible entrypoint.
-You are the Project Hub Thread for <project>. threadRole: project-hub. Canonical repo/worktree: <path>. Run audit-project with the expected project id/base branch, and use visualize-project or weekly-report only when useful for human-facing output. Build the hub view from real git worktrees plus sidecar active tasks. Summarize active execution threads, discussion/research threads, missing sidecar coverage, stale handoffs, validation/safety gaps, recommended actions, concrete backfill prompts, and cleanup prompts. Do not treat project-status as the full inventory. Do not implement feature code in the hub thread. Route work to the appropriate execution, discussion, research, dogfood, or review thread and request a durable receipt back to the hub.
+You are the Project Hub Thread for <project>. threadRole: hub. Canonical repo/worktree: <path>. Run audit-project with the expected project id/base branch, and use visualize-project or weekly-report only when useful for human-facing output. Build the hub view from real git worktrees plus sidecar active tasks. Summarize active execution threads, discussion/research threads, missing sidecar coverage, stale handoffs, validation/safety gaps, recommended actions, concrete backfill prompts, and cleanup prompts. Do not treat project-status as the full inventory. Do not implement feature code in the hub thread. Route work to the appropriate execution, discussion, research, dogfood, or review thread and request a durable receipt back to the hub.
 ```
 
 Dogfood/QA Thread Handoff:
 
 ```text
 Use $agent-workflow-hub first. If only $context-handoff is available, use it as the compatible entrypoint.
-You are a Dogfood/QA Thread for <project>. threadRole: dogfood-qa. Feedback: <observed behavior>. Expected: <expected behavior>. Repo/worktree if known: <path>. Use resume-query first if this feedback may belong to an existing task or issue. Otherwise start or attach a provisional dogfood/QA task. Keep Facts, Inferences, Unknowns, Reproduction, Suggested Fix, Priority, safety concerns, and nextStep separate. Prefer draft-issue by default. Do not create a GitHub issue unless I explicitly ask or dogfood issue mode is enabled. Save the durable QA findings to a sidecar handoff and report the issue draft/path, priority, and next recommended action back to the Project Hub.
+You are a Dogfood/QA Thread for <project>. threadRole: dogfood. Feedback: <observed behavior>. Expected: <expected behavior>. Repo/worktree if known: <path>. Use resume-query first if this feedback may belong to an existing task or issue. Otherwise start or attach a provisional dogfood/QA task. Keep Facts, Inferences, Unknowns, Reproduction, Suggested Fix, Priority, safety concerns, and nextStep separate. Prefer draft-issue by default. Do not create a GitHub issue unless I explicitly ask or dogfood issue mode is enabled. Save the durable QA findings to a sidecar handoff and report the issue draft/path, priority, and next recommended action back to the Project Hub.
 ```
 
 ## Actions

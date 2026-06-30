@@ -20,7 +20,7 @@ from typing import Any
 
 VALID_STATUSES = {"active", "paused", "blocked", "review", "validation"}
 VALID_PHASES = {"implementation", "validation", "post-merge-validation", "follow-up", "bugfix"}
-VALID_THREAD_ROLES = {"primary-execution", "validation", "review", "discussion", "dogfood", "explainer", "hub"}
+VALID_THREAD_ROLES = {"hub", "primary-execution", "discussion", "research", "review", "validation", "dogfood", "explainer"}
 VALID_ROUTING_STATUSES = {"confirmed", "inferred", "ambiguous", "mismatch", "provisional"}
 SIDECAR_VERSION = 2
 GH_AUTH_STATUS_TIMEOUT_SECONDS = 15
@@ -539,10 +539,24 @@ def normalize_thread_role(value: str | None) -> str:
         return ""
     normalized = slugify(value)
     aliases = {
+        "project-hub": "hub",
+        "projecthub": "hub",
+        "hub-thread": "hub",
         "primary": "primary-execution",
         "execution": "primary-execution",
         "primary-execution-thread": "primary-execution",
+        "research-planning": "research",
+        "research-strategy": "research",
+        "paper-strategy": "research",
+        "paper-planning": "research",
+        "academic-research": "research",
+        "dogfood-qa": "dogfood",
+        "qa-thread": "dogfood",
+        "dogfood-thread": "dogfood",
         "validator": "validation",
+        "validation-thread": "validation",
+        "review-thread": "review",
+        "explainer-thread": "explainer",
         "qa": "validation",
     }
     normalized = aliases.get(normalized, normalized)
