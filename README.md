@@ -278,6 +278,7 @@ Base branch can be overridden with `--base-branch dev`; the value is persisted i
 - `weekly-report`: Write a human-facing Markdown report under the sidecar `reports/` directory.
 - `eval-report`: Write lightweight workflow evaluation Markdown and JSON reports under `reports/`. This reports proxy workflow metrics, not exact token savings or proof of correctness.
 - `visualize-project`: Write a Markdown + Mermaid project graph, companion JSON, and static HTML dashboard under `reports/`. Use when the user asks to visualize the project or show the project graph.
+- `hygiene-dogfood`: Report stale dogfood/smoke sidecar records that have later pass evidence, and archive exactly one eligible record only with `--confirm-archive --task-id <id>`.
 - `draft-issue`: Generate a dogfood/debug issue draft without requiring GitHub CLI.
 - `create-issue`: Create a dogfood/debug issue only when explicitly requested, safe, authenticated, and not likely duplicated.
 - `enable-dogfood-issue-mode` / `disable-dogfood-issue-mode`: Persist local sidecar permission for dogfood issue creation.
@@ -358,6 +359,16 @@ Dogfood issue reporting is draft-only by default. Agents may generate a copyable
 - Priority
 
 Automatic issue creation is allowed only when the user explicitly asks to create an issue or enables dogfood issue mode for the local sidecar project. Created issues get `agent-reported` and `needs-triage` labels. Before creating, the CLI checks `gh auth status`, searches similar open issues, and blocks creation when sensitive content, tokens, private paths, or oversized logs are detected. In blocked or unauthenticated cases it returns the title/body draft instead.
+
+## Dogfood Smoke Hygiene
+
+`hygiene-dogfood` is a narrow safety valve for stale dogfood/smoke records, such as pre-reinstall failures or stale-environment blockers that were later superseded by passing validation. It is report-only by default and surfaces candidates through `dogfoodHygiene` plus `archive-stale-dogfood-record` recommendations in hub outputs.
+
+It does not bulk archive, delete worktrees, or clean ordinary execution tasks. To archive one eligible record, rerun with explicit human confirmation:
+
+```text
+hygiene-dogfood --confirm-archive --task-id <id>
+```
 
 ## Research Notes
 

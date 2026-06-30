@@ -269,6 +269,7 @@ base branch 可以用 `--base-branch dev` 覆盖；该值会持久化到本地 s
 - `weekly-report`：在 sidecar 的 `reports/` 目录生成给人看的 Markdown 周报。
 - `eval-report`：在 sidecar 的 `reports/` 目录生成轻量 workflow evaluation Markdown 和 JSON 报告。它报告 workflow proxy metrics，不报告精确 token savings，也不证明代码正确。
 - `visualize-project`：在 sidecar 的 `reports/` 目录生成 Markdown + Mermaid 项目关系图、配套 JSON 和静态 HTML dashboard。用户要求“可视化项目”或“显示项目图”时使用。
+- `hygiene-dogfood`：报告已有后续通过证据的 stale dogfood/smoke sidecar 记录；只有显式传 `--confirm-archive --task-id <id>` 时才归档单个合格记录。
 - `draft-issue`：生成 dogfood/debug issue draft，不需要 GitHub CLI。
 - `create-issue`：仅在用户明确要求、内容安全、GitHub CLI 已登录且未发现明显重复时创建 dogfood/debug issue。
 - `enable-dogfood-issue-mode` / `disable-dogfood-issue-mode`：把 dogfood issue 创建权限保存到本地 sidecar config。
@@ -343,6 +344,16 @@ Dogfood issue 默认只生成 draft。agent 可以用 `draft-issue` 产出可复
 - Priority
 
 只有当用户明确要求创建 issue，或为本地 sidecar project 启用 `dogfoodIssueMode` 后，CLI 才允许自动创建 issue。自动创建的 issue 会带有 `agent-reported` 和 `needs-triage` labels。创建前会检查 `gh auth status`，尽量搜索相似 open issue，并在检测到敏感内容、密钥、本地隐私路径或过长日志时阻止创建并返回 draft。`dogfoodIssueMode` 只写入本机 sidecar config，不写入目标仓库。
+
+## Dogfood Smoke Hygiene
+
+`hygiene-dogfood` 是一个很窄的安全阀，用来处理已经被后续通过结果覆盖的旧 dogfood/smoke 记录，例如 pre-reinstall 失败、stale environment blocker。默认只报告候选项，并在 hub 输出里通过 `dogfoodHygiene` 和 `archive-stale-dogfood-record` recommendation 暴露。
+
+它不会批量归档、不会删除 worktree，也不会清理普通 execution task。要归档一个合格记录，必须显式确认：
+
+```text
+hygiene-dogfood --confirm-archive --task-id <id>
+```
 
 ## GitHub PR 行为
 

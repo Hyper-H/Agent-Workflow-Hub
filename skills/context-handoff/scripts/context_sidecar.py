@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import shutil
@@ -25,6 +26,42 @@ VALID_ROUTING_STATUSES = {"confirmed", "inferred", "ambiguous", "mismatch", "pro
 SIDECAR_VERSION = 2
 GH_AUTH_STATUS_TIMEOUT_SECONDS = 15
 DOGFOOD_ISSUE_LABELS = ["agent-reported", "needs-triage"]
+DOGFOOD_HYGIENE_SCOPE_TERMS = [
+    "dogfood",
+    "smoke",
+    "pre-reinstall",
+    "pre reinstall",
+    "stale environment",
+    "role model consistency",
+    "old checksum",
+    "installed skill stale",
+]
+DOGFOOD_HYGIENE_FAILURE_TERMS = [
+    "fail",
+    "failed",
+    "failure",
+    "blocked",
+    "stale",
+    "version mismatch",
+    "source stale",
+    "old checksum",
+    "not installed",
+    "not running the target patch",
+]
+DOGFOOD_HYGIENE_PASS_TERMS = [
+    "pass",
+    "passed",
+    "resolved",
+    "install passed",
+    "checksum match",
+    "checksums now match",
+    "source updated",
+    "stale environment issue",
+    "not a patch failure",
+    "not a real",
+    "smoke passed",
+]
+DOGFOOD_HYGIENE_ARCHIVE_REASON = "stale dogfood/smoke record superseded by later passing validation"
 SENSITIVE_ISSUE_PATTERNS = [
     r"gho_[A-Za-z0-9_]+",
     r"ghp_[A-Za-z0-9_]+",
@@ -2743,6 +2780,7 @@ def build_visual_project_payload(manager: SidecarManager, include_archive: bool,
     worktree_paths = {str(Path(row["worktreePath"]).resolve()) for row in rows if row.get("worktreePath")}
     covered_task_ids = {str(row.get("taskId") or "") for row in rows if row.get("taskId")}
     active_tasks = [task for task in tasks if task.get("status", "active") in VISUAL_ACTIVE_STATUSES]
+    dogfood_candidates, _ = dogfood_hygiene_records(manager, payload)
     active_without_worktree: list[dict[str, Any]] = []
     for task in active_tasks:
         task_id = str(task.get("taskId") or "")
@@ -2774,10 +2812,13 @@ def build_visual_project_payload(manager: SidecarManager, include_archive: bool,
             row["health"] = "blocked" if row.get("taskStatus") == "blocked" or not row.get("handoffAvailable") else "attention"
         rows.append(row)
 
-    recommended_actions, _, cleanup_prompts = build_hub_action_prompts(manager, rows, active_without_worktree, language)
+    recommended_actions, _, cleanup_prompts = build_hub_action_prompts(manager, rows, active_without_worktree, language, dogfood_candidates)
     actions_by_key: dict[str, dict[str, Any]] = {}
     for action in recommended_actions:
-        for key in [action.get("taskId", ""), action.get("worktreePath", ""), action.get("branch", "")]:
+        keys = [action.get("taskId", "")]
+        if action.get("recommendedActionType") != "archive-stale-dogfood-record":
+            keys.extend([action.get("worktreePath", ""), action.get("branch", "")])
+        for key in keys:
             if key:
                 actions_by_key.setdefault(str(key), action)
 
@@ -2927,6 +2968,7 @@ def build_visual_project_payload(manager: SidecarManager, include_archive: bool,
                 "branch": row.get("branch", ""),
                 "health": row.get("health", ""),
                 "reason": reason,
+                "recommendedActionType": row.get("recommendedActionType", ""),
                 "worktreePath": row.get("worktreePath", ""),
             }
         )
@@ -3117,6 +3159,134 @@ def task_handoff_summary(manager: SidecarManager, task: dict[str, Any]) -> str:
         return short_text(path.read_text(encoding="utf-8", errors="replace"), max_len=1200)
     except OSError:
         return ""
+
+
+def dogfood_hygiene_handoff_text(manager: SidecarManager, task: dict[str, Any]) -> str:
+    path = manager.handoff_path_for(task)
+    if not path.exists():
+        return ""
+    try:
+        return short_text(path.read_text(encoding="utf-8", errors="replace"), max_len=5000)
+    except OSError:
+        return ""
+
+
+def dogfood_hygiene_blob(task: dict[str, Any], handoff_text: str = "") -> str:
+    values: list[str] = [
+        str(task.get("taskId") or ""),
+        str(task.get("goal") or ""),
+        str(task.get("threadRole") or ""),
+        str(task.get("threadLabel") or ""),
+        str(task.get("threadPurpose") or ""),
+        str(task.get("blocker") or ""),
+        str(task.get("lastThreadSummary") or ""),
+        str(task.get("nextStep") or ""),
+        str(task.get("status") or ""),
+        handoff_text,
+    ]
+    values.extend(str(item) for item in task.get("aliases") or [])
+    values.extend(str(item) for item in task.get("facts") or [])
+    values.extend(str(item) for item in task.get("inferences") or [])
+    values.extend(str(item) for item in task.get("unknowns") or [])
+    validation = task.get("validation") or {}
+    values.append(str(validation.get("notes") or ""))
+    for item in validation.get("commands") or []:
+        values.append(str(item.get("command") if isinstance(item, dict) else item))
+    for item in validation.get("results") or []:
+        values.append(str(item.get("result") if isinstance(item, dict) else item))
+    return "\n".join(value for value in values if value).casefold()
+
+
+def contains_any_term(text: str, terms: list[str]) -> list[str]:
+    matches: list[str] = []
+    for term in terms:
+        pattern = rf"(?<![a-z0-9]){re.escape(term.casefold())}(?![a-z0-9])"
+        if re.search(pattern, text):
+            matches.append(term)
+    return matches
+
+
+def dogfood_hygiene_archive_command(manager: SidecarManager, task_id: str) -> str:
+    return " ".join(
+        [
+            "hygiene-dogfood",
+            "--worktree",
+            shlex.quote(str(manager.git.worktree_path)),
+            "--project-id",
+            shlex.quote(manager.project_id),
+            "--confirm-archive",
+            "--task-id",
+            shlex.quote(task_id),
+        ]
+    )
+
+
+def dogfood_hygiene_candidate_record(manager: SidecarManager, task: dict[str, Any]) -> dict[str, Any]:
+    handoff_text = dogfood_hygiene_handoff_text(manager, task)
+    blob = dogfood_hygiene_blob(task, handoff_text)
+    scope_terms = contains_any_term(blob, DOGFOOD_HYGIENE_SCOPE_TERMS)
+    failure_terms = contains_any_term(blob, DOGFOOD_HYGIENE_FAILURE_TERMS)
+    pass_terms = contains_any_term(blob, DOGFOOD_HYGIENE_PASS_TERMS)
+    scope_hit = str(task.get("threadRole") or "") == "dogfood" or bool(scope_terms)
+    failure_hit = str(task.get("status") or "") == "blocked" or bool(task.get("blocker")) or bool(failure_terms)
+    pass_hit = bool(pass_terms)
+
+    evidence: list[str] = []
+    if str(task.get("threadRole") or "") == "dogfood":
+        evidence.append("threadRole is dogfood")
+    if scope_terms:
+        evidence.append(f"dogfood/smoke scope terms: {', '.join(scope_terms[:5])}")
+    if str(task.get("status") or "") == "blocked":
+        evidence.append("task status is blocked")
+    if task.get("blocker"):
+        evidence.append("task has blocker text")
+    if failure_terms:
+        evidence.append(f"old failure terms: {', '.join(failure_terms[:5])}")
+    if pass_terms:
+        evidence.append(f"later pass terms: {', '.join(pass_terms[:5])}")
+    if handoff_text:
+        evidence.append("handoff text was inspected")
+
+    is_candidate = bool(scope_hit and failure_hit and pass_hit)
+    task_id = str(task.get("taskId") or "")
+    reason = (
+        DOGFOOD_HYGIENE_ARCHIVE_REASON
+        if is_candidate
+        else "dogfood/smoke record lacks enough evidence for safe archive"
+    )
+    return {
+        "taskId": task_id,
+        "threadRole": task.get("threadRole", ""),
+        "threadLabel": task.get("threadLabel", ""),
+        "status": task.get("status", "active"),
+        "branch": task.get("branch", ""),
+        "worktreePath": task.get("worktreePath", ""),
+        "blocker": task.get("blocker", ""),
+        "updatedAt": task.get("updatedAt", ""),
+        "reason": reason,
+        "evidence": unique_nonempty(evidence, limit=8),
+        "confidence": "high" if is_candidate else "low",
+        "recommendedAction": "archive-stale-dogfood-record" if is_candidate else "",
+        "archiveCommand": dogfood_hygiene_archive_command(manager, task_id) if is_candidate and task_id else "",
+        "isCandidate": is_candidate,
+        "scopeMatched": bool(scope_hit),
+        "failureMatched": bool(failure_hit),
+        "passMatched": bool(pass_hit),
+        "handoffPath": str(manager.handoff_path_for(task)),
+        "handoffAvailable": manager.handoff_path_for(task).exists(),
+    }
+
+
+def dogfood_hygiene_records(manager: SidecarManager, payload: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    candidates: list[dict[str, Any]] = []
+    non_recommended: list[dict[str, Any]] = []
+    for task in payload.get("tasks", []):
+        record = dogfood_hygiene_candidate_record(manager, task)
+        if record["isCandidate"]:
+            candidates.append(record)
+        elif record["scopeMatched"] and record["failureMatched"]:
+            non_recommended.append(record)
+    return candidates, non_recommended
 
 
 def score_text_match(query: str, value: str) -> float:
@@ -4067,9 +4237,25 @@ def build_hub_action_prompts(
     rows: list[dict[str, Any]],
     active_without_worktree: list[dict[str, Any]],
     language: str,
+    dogfood_hygiene_candidates: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, str]], list[dict[str, Any]]]:
     recommended_actions: list[dict[str, Any]] = []
     thread_prompts_by_branch: dict[str, dict[str, str]] = {}
+    for candidate in dogfood_hygiene_candidates or []:
+        recommended_actions.append(
+            {
+                "branch": candidate.get("branch", ""),
+                "worktreePath": candidate.get("worktreePath", ""),
+                "taskId": candidate.get("taskId", ""),
+                "reason": candidate.get("reason", DOGFOOD_HYGIENE_ARCHIVE_REASON),
+                "reasons": [candidate.get("reason", DOGFOOD_HYGIENE_ARCHIVE_REASON)],
+                "recommendedActionType": "archive-stale-dogfood-record",
+                "prompt": f"Run {candidate.get('archiveCommand', '')} after human confirmation.",
+                "archiveCommand": candidate.get("archiveCommand", ""),
+                "evidence": candidate.get("evidence", []),
+                "hubReceiptExpected": HUB_RECEIPT_FIELDS,
+            }
+        )
     for row in rows:
         reasons = audit_row_action_reasons(row, language)
         if not reasons:
@@ -4437,6 +4623,7 @@ def cmd_audit_project(args: argparse.Namespace) -> int:
     missing_handoff = sum(1 for row in rows if not row.get("handoffAvailable"))
     missing_validation = sum(1 for row in rows if not row.get("validationPresent"))
     missing_safety = sum(1 for row in rows if not row.get("safetyRulesPresent"))
+    dogfood_candidates, dogfood_non_recommended = dogfood_hygiene_records(manager, payload)
     summary_counts = {
         "gitWorktrees": len(worktrees),
         "sidecarActiveTasks": len(active_tasks),
@@ -4449,12 +4636,14 @@ def cmd_audit_project(args: argparse.Namespace) -> int:
         "missingSafetyRules": missing_safety,
         "activeTasksWithoutWorktree": len(active_without_worktree),
         "worktreeAuditErrors": len(errors),
+        "staleDogfoodRecords": len(dogfood_candidates),
     }
     recommended_actions, thread_prompts_by_branch, cleanup_prompts = build_hub_action_prompts(
         manager,
         rows,
         active_without_worktree,
         language,
+        dogfood_candidates,
     )
 
     output = {
@@ -4475,6 +4664,11 @@ def cmd_audit_project(args: argparse.Namespace) -> int:
         "recommendedActions": recommended_actions,
         "threadPromptsByBranch": thread_prompts_by_branch,
         "cleanupPrompts": cleanup_prompts,
+        "dogfoodHygiene": {
+            "candidateRecords": dogfood_candidates,
+            "nonRecommendedRecords": dogfood_non_recommended,
+            "requiresConfirmation": True,
+        },
         "projectStatus": {
             "activeTaskCount": state.get("activeTaskCount", 0),
             "activeTasks": state.get("activeTasks", []),
@@ -4506,6 +4700,7 @@ def cmd_audit_project(args: argparse.Namespace) -> int:
         sidecarActiveTasks=summary_counts["sidecarActiveTasks"],
         untrackedWorktrees=summary_counts["untrackedWorktrees"],
         staleTasks=summary_counts["staleTasks"],
+        staleDogfoodRecords=summary_counts["staleDogfoodRecords"],
     )
     print(json.dumps(output, ensure_ascii=False, indent=2))
     return 0
@@ -4631,6 +4826,73 @@ def cmd_rebaseline_project(args: argparse.Namespace) -> int:
         archivedStaleTasks=len(archived_results),
         hubTaskUpdated=hub_updated,
     )
+    print(json.dumps(output, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_hygiene_dogfood(args: argparse.Namespace) -> int:
+    started_at = time.perf_counter()
+    manager = make_manager(args)
+    payload = manager.load_active_tasks()
+    candidates, non_recommended = dogfood_hygiene_records(manager, payload)
+    archived: list[dict[str, Any]] = []
+    sidecar_mutated = False
+
+    if args.confirm_archive:
+        if not args.task_id:
+            raise SystemExit("--confirm-archive requires --task-id")
+        task_id = slugify(args.task_id)
+        task = task_by_id(manager, payload, task_id)
+        if task is None:
+            raise SystemExit(f"task not found for hygiene archive: {task_id}")
+        record = dogfood_hygiene_candidate_record(manager, task)
+        if not record.get("isCandidate"):
+            raise SystemExit(
+                f"task {task_id} is not an eligible stale dogfood/smoke record; run hygiene-dogfood without --confirm-archive first"
+            )
+        task["hygieneArchiveReason"] = DOGFOOD_HYGIENE_ARCHIVE_REASON
+        task["hygieneArchivedBy"] = "hygiene-dogfood"
+        task["hygieneEvidence"] = record.get("evidence", [])
+        task["hygieneArchivedAt"] = now_iso()
+        archive_result = archive_task(
+            manager,
+            payload,
+            task,
+            event="hygiene-dogfood-archive",
+            started_at=started_at,
+        )
+        archive_result["reason"] = DOGFOOD_HYGIENE_ARCHIVE_REASON
+        archive_result["evidence"] = record.get("evidence", [])
+        archived.append(archive_result)
+        sidecar_mutated = True
+        payload = manager.load_active_tasks()
+        candidates, non_recommended = dogfood_hygiene_records(manager, payload)
+    else:
+        manager.log_event(
+            "hygiene-dogfood",
+            started_at=started_at,
+            sidecar_hit=True,
+            scan_scope="sidecar-dogfood-hygiene",
+            candidateCount=len(candidates),
+            nonRecommendedCount=len(non_recommended),
+        )
+
+    output = {
+        "projectId": manager.project_id,
+        "action": "hygiene-dogfood",
+        "sidecarRoot": str(manager.sidecar_root),
+        "checkedAt": now_iso(),
+        "candidateRecords": candidates,
+        "nonRecommendedRecords": non_recommended,
+        "archived": archived,
+        "requiresConfirmation": True,
+        "sidecarMutated": sidecar_mutated,
+        "repoMutated": False,
+        "guidance": (
+            "Report-only by default. Archive exactly one stale dogfood/smoke record with "
+            "--confirm-archive --task-id <id> after human confirmation."
+        ),
+    }
     print(json.dumps(output, ensure_ascii=False, indent=2))
     return 0
 
@@ -5172,6 +5434,12 @@ def build_parser() -> argparse.ArgumentParser:
     rebaseline_parser.add_argument("--update-current-hub-task", action="store_true", help="Create or update the current project hub task and handoff.")
     rebaseline_parser.add_argument("--confirm-archive-stale", action="store_true", help="Archive stale historical active sidecar tasks after human confirmation.")
     rebaseline_parser.set_defaults(func=cmd_rebaseline_project)
+
+    hygiene_dogfood_parser = subparsers.add_parser("hygiene-dogfood", help="Inspect stale dogfood/smoke sidecar records and optionally archive one confirmed candidate")
+    add_common(hygiene_dogfood_parser)
+    hygiene_dogfood_parser.add_argument("--task-id", help="Task id to archive when used with --confirm-archive.")
+    hygiene_dogfood_parser.add_argument("--confirm-archive", action="store_true", help="Archive one eligible stale dogfood/smoke record after human confirmation.")
+    hygiene_dogfood_parser.set_defaults(func=cmd_hygiene_dogfood)
 
     handoff_parser = subparsers.add_parser("handoff", help="Update the current task and write the latest handoff")
     add_common(handoff_parser)
