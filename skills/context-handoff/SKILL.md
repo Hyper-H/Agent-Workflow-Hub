@@ -70,6 +70,16 @@ This compatibility entrypoint supports the same V2.8 routing actions as `$agent-
 - Persist only user-confirmed aliases with `start-feature --alias`, `handoff --alias`, or `alias-task --alias`. Generated aliases participate in matching but are not written to task `aliases`.
 - The resolver is local and deterministic: normalized strings, token overlap, and `difflib`; no LLMs, embeddings, vectors, UI, MCP, or thread API.
 
+## New Thread Self-Orientation
+
+When the user says this is a new research, discussion, execution, hub, review, validation, dogfood, or explainer thread, run `orient-thread` first with `--role <role>` and `--query "<topic or task phrase>"`.
+
+- `orient-thread` is report-only by default. It should identify the likely project, canonical thread role, role boundary, task route, first recommended action, handoff expectations, and optional companion skills without writing sidecar state.
+- If it recommends `resume-query`, run that before creating new sidecar state.
+- If it recommends `attach-thread` or `orient-thread --attach`, attach only when the route is confirmed or the user explicitly confirms. Inferred, ambiguous, mismatch, or non-Git-derived routes require `--confirm-route`.
+- If external helper skills are suggested but unavailable, do not block. Continue with built-in tools and record the missing support as an unknown or risk.
+- Do not treat suggested external skills as required dependencies; do not install skills automatically.
+
 ## Multi-Thread Workflow Playbook
 
 Use this playbook when the user asks whether to open a new thread, worktree, subagent, side chat, or project hub. The goal is stable routing, not new infrastructure. Do not add CLI actions, change sidecar schema, or require UI/MCP support for these workflows.
@@ -80,7 +90,7 @@ Core roles users should remember:
 
 - `hub`: global status, task map, routing, prioritization, summaries, rebaseline, reports, and project-wide prompts.
 - `discussion`: engineering route, product direction, architecture tradeoffs, task shaping, and implementation readiness.
-- `research`: paper potential, novelty, related work direction, baselines, experiment design, and publication readiness.
+- `research`: evidence-seeking thread for external knowledge, academic/product/ecosystem research, related work, market comparison, prior art, novelty, baselines, experiments, and evidence-backed direction finding.
 - `primary-execution`: implementation, bug fixing, local validation, task handoff, finish/archive, and PR text.
 
 Support roles remain available for structured sidecar state but are optional in the default workflow: `review`, `validation`, `dogfood`, and `explainer`.
@@ -92,7 +102,7 @@ Default topology:
 - Create a new worktree when the task needs an isolated branch, parallel implementation, or a different base. Reuse the existing worktree when continuing the same task or doing tiny scratch work that will not become durable.
 - A repo-bound but still fuzzy task can start directly in a Primary Execution Thread. Plan inside that thread first, then implement once the task is shaped.
 - A fuzzy product-direction task stays in the Project Hub Thread or a short-lived Discussion Thread until it becomes repo-bound and actionable.
-- A research-shaped question belongs in a Research Thread when the durable output is paper story, novelty, related work direction, baselines, experiment design, or publication readiness rather than immediate implementation.
+- A research-shaped question belongs in a Research Thread when the durable output is external evidence, prior art, market/ecosystem comparison, paper story, novelty, related work direction, baselines, experiment design, or feasibility rather than immediate implementation.
 - Side chats are for short questions, scratch wording, or throwaway drafts. They should not become the canonical project memory.
 - Subagents are temporary helpers for review, investigation, comparison, or validation. They should report findings back to the primary or hub thread and should not become long-term task owners.
 - Explainer Threads are for deep project explanation or onboarding. Use them to avoid turning the hub into a long tutorial.
@@ -106,7 +116,7 @@ Routing rules:
 - If the user asks whether to open a worktree, recommend one only when isolation, parallel work, or a separate branch/base is useful; otherwise continue in the current worktree.
 - If the user has a task but the exact implementation path is fuzzy and it clearly belongs to one repo/worktree, create the execution thread anyway and start with planning in that thread.
 - If the user is still deciding product direction, user value, priority, or whether the task should exist, keep it in the hub or create a Discussion Thread.
-- If the user is asking about paper potential, novelty, related work, baselines, experiments, ablations, reviewer expectations, or publication readiness, use a Research Thread with `threadRole: research`.
+- If the user is asking about external evidence, academic/product/ecosystem research, market comparison, prior art, paper potential, novelty, related work, baselines, experiments, ablations, reviewer expectations, feasibility, or publication readiness, use a Research Thread with `threadRole: research`.
 - If the question is small and does not need durable project memory, use a side chat and copy only final decisions back to the hub or execution thread when needed.
 - If independent review, targeted research, or validation would help, launch a subagent with a narrow question and an explicit "return findings only" instruction.
 - If the user wants a deep explanation of architecture, history, or onboarding, create an Explainer Thread and point it at stable docs plus the current repo.
@@ -168,6 +178,7 @@ You are a Dogfood/QA Thread for <project>. threadRole: dogfood. Feedback: <obser
 - `start-feature`: Create or update the active task for the current branch/worktree. Use when the user starts a new feature or says what this branch is for.
 - `alias-task`: Add or remove user-confirmed task aliases. Use when a user names a durable nickname for a task.
 - `attach-thread`: Attach a thread role, label, purpose, parent task, phase, and routing review metadata to a sidecar task without requiring a code change.
+- `orient-thread`: Orient a new thread from a role and short query. It is report-only by default, suggests project/task routing, role boundaries, next CLI commands, handoff requirements, and optional companion skills. Use `--attach` only when the route is safe or explicitly confirmed.
 - `resolve-task`: Resolve a natural-language query to a sidecar task. Use when routing without resuming.
 - `resume-feature`: Recover compact task state, latest handoff availability, stable docs, git status, and next-step hints. Use when taking over or continuing a branch.
 - `resume-query`: Resolve a natural-language query and resume the matched worktree when confidence is high. Use when the user says "continue <nickname>".
@@ -194,6 +205,7 @@ You are a Dogfood/QA Thread for <project>. threadRole: dogfood. Feedback: <obser
 - Before the first action in a project, run the bundled CLI with the current worktree path. Prefer `doctor` before `setup` when the project has not used the sidecar before.
 - If the user says "start this feature", "track this branch", or gives a feature goal, run `start-feature` with `--goal` and optional `--next-step`.
 - If the user says "continue <task nickname>" from a hub or container context, run `resume-query --query "<task nickname>"` and follow its confidence/disambiguation output.
+- If the user says "you are a <role> thread", "as a <role> execution/research/discussion thread", or opens a new role-specific thread with a topic, run `orient-thread --role <role> --query "<topic>"` first.
 - If the user says "take over", "resume", "where are we", or "continue this worktree", run `resume-feature`, then summarize only the useful context and next step.
 - If the user asks to audit trustworthiness, run `audit-context` and summarize findings plus backfill prompts.
 - If the user is ending a session or passing work to another agent, run `handoff` with concrete done/not-done fields and explicit `--fact`, `--inference`, `--unknown`, `--safety-rule`, `--validation-command`, `--validation-result`, and `--validation-at` values where known.
