@@ -121,7 +121,7 @@ Core roles users should remember:
 
 - `hub`: global status, task map, routing, prioritization, summaries, rebaseline, reports, and project-wide prompts.
 - `discussion`: engineering route, product direction, architecture tradeoffs, task shaping, and implementation readiness.
-- `research`: paper potential, novelty, related work direction, baselines, experiment design, and publication readiness.
+- `research`: evidence-seeking thread for external knowledge, academic/product/ecosystem research, related work, market comparison, prior art, novelty, baselines, experiments, and evidence-backed direction finding.
 - `primary-execution`: implementation, bug fixing, local validation, task handoff, finish/archive, and PR text.
 
 Support roles remain available for structured sidecar/UI/audit state but are optional in the default workflow: `review`, `validation`, `dogfood`, and `explainer`.
@@ -133,7 +133,7 @@ Default topology:
 - Create a new worktree when the task needs an isolated branch, parallel implementation, or a different base. Reuse the existing worktree when continuing the same task or doing tiny scratch work.
 - Repo-bound fuzzy tasks can start directly in an execution thread, plan there first, then implement.
 - Product-direction fuzzy tasks stay in the hub or a short-lived Discussion Thread until they become actionable.
-- Research-shaped questions use a Research Thread when the durable output is paper story, novelty, related work direction, baselines, experiment design, or publication readiness.
+- Research-shaped questions use a Research Thread when the durable output is external evidence, prior art, market/ecosystem comparison, paper story, novelty, related work direction, baselines, experiment design, or feasibility.
 - Side chats are for short questions, scratch wording, and throwaway drafts; copy only durable decisions back to the hub or execution thread.
 - Subagents are temporary helpers for review, investigation, comparison, or validation; they report findings back and do not own long-running tasks.
 - Explainer Threads handle deep project explanation or onboarding so the hub does not become a tutorial transcript.
@@ -147,7 +147,7 @@ Routing guidance:
 - Recommend a new worktree only when isolation, parallel work, or a separate branch/base is useful; otherwise continue in the current worktree.
 - If the task is fuzzy but clearly belongs to one repo/worktree, open the execution thread and plan inside it.
 - If the task is still about product direction, priority, or whether the idea should exist, keep it in the hub or a Discussion Thread.
-- If the task is about paper potential, novelty, related work, baselines, experiments, ablations, reviewer expectations, or publication readiness, use a Research Thread with `threadRole: research`.
+- If the task is about external evidence, academic/product/ecosystem research, market comparison, prior art, paper potential, novelty, related work, baselines, experiments, ablations, reviewer expectations, feasibility, or publication readiness, use a Research Thread with `threadRole: research`.
 - Use a side chat for small non-durable questions.
 - Use a subagent for bounded research/review/validation with a narrow return-finding prompt.
 - Use an Explainer Thread for architecture/history/onboarding explanations.
@@ -233,6 +233,18 @@ V3.5 adds route guards and thread attachment metadata. Write actions inspect exp
 
 Tasks can now have a lightweight parent/child relationship via `parentTaskId`. Children are derived by scanning tasks with that parent; the sidecar does not store `childrenTaskIds`, dependencies, or multiple parents. Optional `phase`, `threadRole`, `threadLabel`, and `threadPurpose` fields describe follow-up, validation, review, dogfood, or explainer threads without turning the hub into a full project-management system.
 
+## New Thread Self-Orientation
+
+When a new thread starts with a role and topic, use `orient-thread` first:
+
+```text
+Use $agent-workflow-hub, you are a research thread about external skills for Agent Workflow Hub roles.
+```
+
+`orient-thread` is report-only by default. It identifies the likely project, canonical `threadRole`, role boundary, task route, recommended next action, handoff expectations, and optional companion skills. It does not write sidecar state unless rerun with `--attach`.
+
+If the route is inferred, ambiguous, mismatch, or derived from a non-Git path, `--attach` requires `--confirm-route`. Suggested external skills are advisory metadata, not required dependencies, and are never installed automatically.
+
 ## Sidecar State
 
 Dynamic state is local-only and stays outside your repository:
@@ -267,6 +279,7 @@ Base branch can be overridden with `--base-branch dev`; the value is persisted i
 - `start-feature`: Track the current branch/worktree as an active task.
 - `alias-task`: Add or remove human-friendly task aliases.
 - `attach-thread`: Attach thread role, label, purpose, parent task, phase, and routing review metadata to a sidecar task.
+- `orient-thread`: Orient a new thread from a role and short query. Report-only by default; suggests project/task route, role boundary, next CLI command, handoff requirements, and optional companion skills.
 - `resolve-task`: Resolve a natural-language query to a sidecar task without resuming.
 - `resume-feature`: Recover compact context, stale detection, and a `startThreadSummary`.
 - `resume-query`: Resolve a natural-language query, then run sidecar-first resume on the matched worktree when confidence is high.
