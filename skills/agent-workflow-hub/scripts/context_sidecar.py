@@ -647,6 +647,7 @@ def normalize_thread_role(value: str | None) -> str:
         "paper-strategy": "research",
         "paper-planning": "research",
         "academic-research": "research",
+        "research-discussion": "research",
         "dogfood-qa": "dogfood",
         "qa-thread": "dogfood",
         "dogfood-thread": "dogfood",
@@ -904,6 +905,8 @@ def apply_route_metadata(task: dict[str, Any], route: dict[str, Any]) -> None:
 
 
 def route_allows_git_snapshot_refresh(manager: "SidecarManager", task: dict[str, Any], args: argparse.Namespace, route: dict[str, Any] | None) -> bool:
+    if getattr(args, "project_level_orientation", False):
+        return False
     if task.get("_isNewTask"):
         return True
     current_path = resolved_path_text(str(manager.git.worktree_path))
@@ -3679,6 +3682,103 @@ def best_worktree_path_from_project_match(match: dict[str, Any], fallback: Path)
     return candidates[0] if candidates else str(fallback)
 
 
+def storage_anchor_from_project_match(match: dict[str, Any], fallback: Path) -> str:
+    fallback_text = str(fallback)
+    fallback_is_git, _ = detect_git_repo(fallback)
+    if fallback_text and not fallback_is_git:
+        return fallback_text
+    candidates = [
+        str(match.get("canonicalRepoRoot") or ""),
+        str(match.get("currentWorktreePath") or ""),
+        *[str(item) for item in match.get("knownWorktreeRoots") or []],
+    ]
+    for candidate in unique_normalized_nonempty(candidates):
+        if candidate:
+            return candidate
+    return str(fallback)
+
+
+def infer_orientation_scope(role: str, query: str, explicit_scope: str = "") -> str:
+    if explicit_scope:
+        return explicit_scope
+    normalized = normalize_query_text(query)
+    project_terms = [
+        "整个",
+        "全局",
+        "项目",
+        "研究路线",
+        "路线图",
+        "整体",
+        "roadmap",
+        "overall",
+        "project direction",
+        "project-level",
+        "project level",
+        "whole project",
+    ]
+    if role in {"research", "discussion", "hub"} and any(term in normalized for term in project_terms):
+        return "project-level"
+    if role == "hub":
+        return "project-level"
+    return "task-level"
+
+
+def is_project_level_scope(scope: str) -> bool:
+    return scope == "project-level"
+
+
+def project_level_task_resolution(manager: SidecarManager, query: str, base_resolution: dict[str, Any]) -> dict[str, Any]:
+    candidates = base_resolution.get("candidates", []) or []
+    return {
+        "resolved": False,
+        "confidence": 0.0,
+        "routingStatus": "provisional",
+        "routingConfidence": 0.0,
+        "routingNeedsReview": False,
+        "routingEvidence": [
+            "project-level orientation keeps feature task matches as related candidates",
+            "project-level orientation does not use ambiguous task candidates as the target",
+        ],
+        "taskId": provisional_task_id_for_query(query),
+        "branch": "",
+        "worktreePath": "",
+        "matchedFields": [],
+        "candidates": [],
+        "routingCandidates": [],
+        "relatedCandidates": candidates[:5],
+        "disambiguationQuestion": "",
+    }
+
+
+def unique_candidate_list(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    unique: dict[str, dict[str, Any]] = {}
+    for candidate in candidates:
+        key = str(candidate.get("taskId") or json.dumps(candidate, ensure_ascii=False, sort_keys=True))
+        if key not in unique:
+            unique[key] = candidate
+    return list(unique.values())[:5]
+
+
+def mark_project_resolution_storage_anchor(resolution: dict[str, Any], storage_anchor: str, scope: str) -> dict[str, Any]:
+    updated = dict(resolution)
+    updated.update(
+        {
+            "worktreePath": "",
+            "storageAnchor": storage_anchor,
+            "storageAnchorIsGitWorktree": bool(detect_git_repo(Path(storage_anchor))[0]),
+            "orientationScope": scope,
+            "routingEvidence": unique_normalized_nonempty(
+                [
+                    *updated.get("routingEvidence", []),
+                    "project-level orientation uses storage anchor instead of feature worktree target",
+                ],
+                limit=20,
+            ),
+        }
+    )
+    return updated
+
+
 def make_manager_for_query(args: argparse.Namespace, language: str = "en") -> tuple[SidecarManager | None, dict[str, Any]]:
     worktree = Path(getattr(args, "worktree", None) or os.getcwd())
     ok, _ = detect_git_repo(worktree)
@@ -3709,6 +3809,8 @@ def make_manager_for_orientation(args: argparse.Namespace, language: str = "en")
     ok, _ = detect_git_repo(worktree)
     explicit_project_id = getattr(args, "project_id", "") or ""
     query = getattr(args, "query", "") or ""
+    role = normalize_thread_role(getattr(args, "role", "") or "")
+    scope = infer_orientation_scope(role, query, getattr(args, "scope", "") or "")
     if ok:
         initial_manager = make_manager(args)
         canonical_project_id = explicit_project_id or project_id_from_git_identity(initial_manager.git)
@@ -3717,26 +3819,35 @@ def make_manager_for_orientation(args: argparse.Namespace, language: str = "en")
             project_id_override=canonical_project_id,
             base_branch_override=getattr(args, "base_branch", "") or "",
         )
-        return manager, project_resolution_from_manager(
+        resolution = project_resolution_from_manager(
             manager,
             "confirmed",
             evidence=["current path is a Git worktree", "project identity resolved from Git remote/common-dir for thread orientation"],
         )
+        if is_project_level_scope(scope):
+            config = read_json(manager.config_path, {})
+            storage_anchor = str(config.get("canonicalRepoRoot") or manager.git.repo_root)
+            resolution = mark_project_resolution_storage_anchor(resolution, storage_anchor, scope)
+        return manager, resolution
 
     matches = find_project_config_by_id(explicit_project_id) if explicit_project_id else find_project_configs_for_path(worktree)
     if len(matches) == 1:
-        resolved_path = best_worktree_path_from_project_match(matches[0], worktree)
+        resolved_path = storage_anchor_from_project_match(matches[0], worktree) if is_project_level_scope(scope) else best_worktree_path_from_project_match(matches[0], worktree)
         manager = SidecarManager(
             Path(resolved_path),
             project_id_override=explicit_project_id or str(matches[0].get("projectId") or ""),
             base_branch_override=getattr(args, "base_branch", "") or "",
         )
-        return manager, project_resolution_from_manager(
+        resolution = project_resolution_from_manager(
             manager,
             "inferred",
             candidates=matches,
             evidence=["non-Git path matched one known sidecar project"],
         )
+        if is_project_level_scope(scope):
+            storage_anchor = storage_anchor_from_project_match(matches[0], worktree)
+            resolution = mark_project_resolution_storage_anchor(resolution, storage_anchor, scope)
+        return manager, resolution
     if len(matches) > 1:
         return None, {
             "resolvedProject": False,
@@ -3756,18 +3867,22 @@ def make_manager_for_orientation(args: argparse.Namespace, language: str = "en")
         second_score = float((second or {}).get("confidence", 0.0))
         clearly_best = top_score >= 0.62 and (not second or top_score - second_score >= 0.12 or top_score >= 0.88)
         if clearly_best:
-            resolved_path = best_worktree_path_from_project_match(top, worktree)
+            resolved_path = storage_anchor_from_project_match(top, worktree) if is_project_level_scope(scope) else best_worktree_path_from_project_match(top, worktree)
             manager = SidecarManager(
                 Path(resolved_path),
                 project_id_override=explicit_project_id or str(top.get("projectId") or ""),
                 base_branch_override=getattr(args, "base_branch", "") or "",
             )
-            return manager, project_resolution_from_manager(
+            resolution = project_resolution_from_manager(
                 manager,
                 "inferred",
                 candidates=query_matches[:3],
                 evidence=[f"query matched sidecar project {top.get('projectId')} with confidence {top_score}"],
             )
+            if is_project_level_scope(scope):
+                storage_anchor = storage_anchor_from_project_match(top, worktree)
+                resolution = mark_project_resolution_storage_anchor(resolution, storage_anchor, scope)
+            return manager, resolution
         return None, {
             "resolvedProject": False,
             "routingStatus": "ambiguous",
@@ -3854,7 +3969,11 @@ def role_external_skills(role: str) -> list[dict[str, Any]]:
     return ROLE_EXTERNAL_SKILLS.get(role, [])
 
 
-def orient_recommended_next_action(task_resolution: dict[str, Any], attach: bool, attach_requires_confirmation: bool) -> str:
+def orient_recommended_next_action(task_resolution: dict[str, Any], attach: bool, attach_requires_confirmation: bool, orientation_scope: str = "task-level") -> str:
+    if is_project_level_scope(orientation_scope):
+        if attach:
+            return "attach-project-thread"
+        return "orient-thread --attach --scope project-level"
     if task_resolution.get("resolved"):
         return "resume-query"
     if attach:
@@ -3864,12 +3983,24 @@ def orient_recommended_next_action(task_resolution: dict[str, Any], attach: bool
     return "resolve-task"
 
 
-def orient_next_cli_commands(manager: SidecarManager, args: argparse.Namespace, role: str, label: str, purpose: str, task_resolution: dict[str, Any], attach_requires_confirmation: bool) -> list[str]:
-    quoted_worktree = shlex.quote(str(manager.git.worktree_path))
+def orient_next_cli_commands(
+    manager: SidecarManager,
+    args: argparse.Namespace,
+    role: str,
+    label: str,
+    purpose: str,
+    task_resolution: dict[str, Any],
+    attach_requires_confirmation: bool,
+    orientation_scope: str = "task-level",
+    project_resolution: dict[str, Any] | None = None,
+) -> list[str]:
+    project_resolution = project_resolution or {}
+    command_anchor = str(project_resolution.get("storageAnchor") or manager.git.worktree_path)
+    quoted_worktree = shlex.quote(command_anchor)
     quoted_project = shlex.quote(manager.project_id)
     quoted_query = shlex.quote(args.query)
     commands: list[str] = []
-    if task_resolution.get("resolved"):
+    if task_resolution.get("resolved") and not is_project_level_scope(orientation_scope):
         commands.append(f"resume-query --worktree {quoted_worktree} --project-id {quoted_project} --query {quoted_query}")
     attach_parts = [
         "orient-thread",
@@ -3887,6 +4018,8 @@ def orient_next_cli_commands(manager: SidecarManager, args: argparse.Namespace, 
         shlex.quote(purpose),
         "--attach",
     ]
+    if orientation_scope:
+        attach_parts.extend(["--scope", shlex.quote(orientation_scope)])
     if attach_requires_confirmation:
         attach_parts.append("--confirm-route")
     if getattr(args, "task_id", None) or task_resolution.get("taskId"):
@@ -3900,7 +4033,7 @@ def orient_next_cli_commands(manager: SidecarManager, args: argparse.Namespace, 
     return commands
 
 
-def orient_attach_args(args: argparse.Namespace, role: str, label: str, purpose: str, task_resolution: dict[str, Any]) -> argparse.Namespace:
+def orient_attach_args(args: argparse.Namespace, role: str, label: str, purpose: str, task_resolution: dict[str, Any], orientation_scope: str = "task-level") -> argparse.Namespace:
     return argparse.Namespace(
         task_id=getattr(args, "task_id", None) or task_resolution.get("taskId") or provisional_task_id_for_query(args.query),
         status="active",
@@ -3910,7 +4043,7 @@ def orient_attach_args(args: argparse.Namespace, role: str, label: str, purpose:
         thread_label=label,
         thread_purpose=purpose,
         confirm_route=getattr(args, "confirm_route", False),
-        routing_evidence=[f"orient-thread query: {args.query}"],
+        routing_evidence=[f"orient-thread query: {args.query}", f"orientationScope {orientation_scope}"],
         goal=f"Thread orientation for {args.query}",
         aliases=None,
         next_step="Save a sidecar handoff with durable findings before stopping.",
@@ -4263,10 +4396,13 @@ def cmd_orient_thread(args: argparse.Namespace) -> int:
     requested_role = getattr(args, "role", "") or ""
     role = normalize_thread_role(requested_role)
     warnings: list[str] = []
+    if requested_role and role != slugify(requested_role):
+        warnings.append(f"threadRole alias normalized: {requested_role} -> {role}")
     if role not in VALID_THREAD_ROLES:
         warnings.append(f"Unknown threadRole preserved as-is: {role}")
 
     language = normalize_language(getattr(args, "language", "") or "en")
+    orientation_scope = infer_orientation_scope(role, getattr(args, "query", "") or "", getattr(args, "scope", "") or "")
     manager, project_resolution = make_manager_for_orientation(args, language)
     if manager is None:
         output = {
@@ -4278,6 +4414,7 @@ def cmd_orient_thread(args: argparse.Namespace) -> int:
             "threadRole": role,
             "threadLabel": orient_thread_label(role, args.query, getattr(args, "thread_label", "") or ""),
             "threadPurpose": orient_thread_purpose(role, args.query, getattr(args, "thread_purpose", "") or ""),
+            "orientationScope": orientation_scope,
             "query": args.query,
             "taskResolution": {
                 "resolved": False,
@@ -4299,11 +4436,16 @@ def cmd_orient_thread(args: argparse.Namespace) -> int:
 
     language = normalize_language(getattr(args, "language", "") or "en")
     read_only_payload = read_active_tasks_payload(manager)
-    task_resolution = orient_task_resolution(manager, read_only_payload, args.query, language)
+    base_task_resolution = orient_task_resolution(manager, read_only_payload, args.query, language)
+    task_resolution = (
+        project_level_task_resolution(manager, args.query, base_task_resolution)
+        if is_project_level_scope(orientation_scope)
+        else base_task_resolution
+    )
     if getattr(args, "task_id", None):
         payload = read_only_payload
         task = task_by_id(manager, payload, slugify(args.task_id))
-        if task:
+        if task and not is_project_level_scope(orientation_scope):
             task_resolution = {
                 "resolved": True,
                 "confidence": 1.0,
@@ -4319,10 +4461,25 @@ def cmd_orient_thread(args: argparse.Namespace) -> int:
                 "routingCandidates": [],
                 "disambiguationQuestion": "",
             }
+        elif is_project_level_scope(orientation_scope):
+            task_resolution["taskId"] = slugify(args.task_id)
+            if task:
+                task_resolution["relatedCandidates"] = unique_candidate_list([score_task_candidate(manager, task, args.query), *task_resolution.get("relatedCandidates", [])])
+                task_resolution["routingEvidence"] = unique_normalized_nonempty(
+                    [
+                        *task_resolution.get("routingEvidence", []),
+                        f"explicit --task-id {slugify(args.task_id)} used as project-level task id; existing task git scope was not treated as route target",
+                    ],
+                    limit=20,
+                )
     if not task_resolution.get("resolved"):
         task_resolution["taskId"] = getattr(args, "task_id", None) or provisional_task_id_for_query(args.query)
-        task_resolution.setdefault("branch", manager.git.branch)
-        task_resolution.setdefault("worktreePath", str(manager.git.worktree_path))
+        if is_project_level_scope(orientation_scope):
+            task_resolution["branch"] = ""
+            task_resolution["worktreePath"] = ""
+        else:
+            task_resolution.setdefault("branch", manager.git.branch)
+            task_resolution.setdefault("worktreePath", str(manager.git.worktree_path))
 
     label = orient_thread_label(role, args.query, getattr(args, "thread_label", "") or "")
     purpose = orient_thread_purpose(role, args.query, getattr(args, "thread_purpose", "") or "")
@@ -4334,6 +4491,8 @@ def cmd_orient_thread(args: argparse.Namespace) -> int:
         or task_status in {"ambiguous", "mismatch"}
         or project_resolution.get("nonGitWorktree")
     )
+    if is_project_level_scope(orientation_scope):
+        attach_requires_confirmation = False
     attach_allowed = attach_requested and (not attach_requires_confirmation or bool(getattr(args, "confirm_route", False)))
     sidecar_mutated = False
     attach_result: dict[str, Any] = {}
@@ -4348,9 +4507,11 @@ def cmd_orient_thread(args: argparse.Namespace) -> int:
         route_status = "confirmed" if bool(getattr(args, "confirm_route", False)) else str(task_resolution.get("routingStatus") or project_status or "confirmed")
         if route_status == "confirmed" and project_status != "confirmed":
             route_status = "inferred"
+        if is_project_level_scope(orientation_scope):
+            route_status = "confirmed" if bool(getattr(args, "confirm_route", False)) else "provisional"
         route = route_result(
             route_status,
-            routingNeedsReview=project_status != "confirmed" or task_resolution.get("routingNeedsReview", False),
+            routingNeedsReview=False if is_project_level_scope(orientation_scope) and bool(getattr(args, "confirm_route", False)) else project_status != "confirmed" or task_resolution.get("routingNeedsReview", False),
             routingConfidence=min(
                 float(project_resolution.get("routingConfidence", 1.0) or 0.0),
                 float(task_resolution.get("routingConfidence", task_resolution.get("confidence", 0.75)) or 0.0),
@@ -4360,17 +4521,40 @@ def cmd_orient_thread(args: argparse.Namespace) -> int:
                     *project_resolution.get("routingEvidence", []),
                     *task_resolution.get("routingEvidence", []),
                     f"orient-thread role {role}",
+                    f"orientationScope {orientation_scope}",
                 ],
                 limit=20,
             ),
-            routingCandidates=task_resolution.get("routingCandidates", []) or task_resolution.get("candidates", [])[:5],
+            routingCandidates=task_resolution.get("routingCandidates", []) or task_resolution.get("relatedCandidates", []) or task_resolution.get("candidates", [])[:5],
         )
+        attach_args = orient_attach_args(args, role, label, purpose, task_resolution, orientation_scope)
+        if is_project_level_scope(orientation_scope):
+            attach_args.project_level_orientation = True
+            attach_args.storage_anchor = str(project_resolution.get("storageAnchor") or manager.git.worktree_path)
         task = manager.upsert_task(
             payload,
             task,
-            orient_attach_args(args, role, label, purpose, task_resolution),
+            attach_args,
             route=route,
         )
+        if is_project_level_scope(orientation_scope):
+            task["orientationScope"] = orientation_scope
+            task["storageAnchor"] = str(project_resolution.get("storageAnchor") or manager.git.worktree_path)
+            task["branch"] = ""
+            task["worktreePath"] = ""
+            task["repoRoot"] = str(project_resolution.get("storageAnchor") or manager.git.repo_root)
+            task["headSha"] = ""
+            task["upstream"] = ""
+            task["dirtyFiles"] = []
+            task["dirtyFingerprint"] = ""
+            if project_resolution.get("storageAnchor"):
+                task["routingEvidence"] = unique_normalized_nonempty(
+                    [
+                        *task.get("routingEvidence", []),
+                        "project-level task stores storageAnchor only; branch/worktree scope intentionally left empty",
+                    ],
+                    limit=30,
+                )
         manager.save_active_tasks(payload)
         sidecar_mutated = True
         attach_result = {
@@ -4381,11 +4565,13 @@ def cmd_orient_thread(args: argparse.Namespace) -> int:
             "routingStatus": task.get("routingStatus", ""),
             "routingConfidence": task.get("routingConfidence", None),
             "routingNeedsReview": bool(task.get("routingNeedsReview", False)),
+            "orientationScope": task.get("orientationScope", ""),
+            "storageAnchor": task.get("storageAnchor", ""),
             "activeTasksPath": str(manager.active_tasks_path),
         }
         task_resolution["taskId"] = task.get("taskId", task_resolution.get("taskId", ""))
 
-    recommended_action = orient_recommended_next_action(task_resolution, attach_requested, attach_requires_confirmation)
+    recommended_action = orient_recommended_next_action(task_resolution, attach_requested, attach_requires_confirmation, orientation_scope)
     output = {
         "action": "orient-thread",
         "repoMutated": False,
@@ -4397,11 +4583,12 @@ def cmd_orient_thread(args: argparse.Namespace) -> int:
         "requestedRole": requested_role,
         "threadLabel": label,
         "threadPurpose": purpose,
+        "orientationScope": orientation_scope,
         "query": args.query,
         "taskResolution": task_resolution,
         "roleBoundary": ROLE_BOUNDARIES.get(role, ROLE_BOUNDARIES["discussion"]),
         "recommendedNextAction": recommended_action,
-        "nextCliCommands": orient_next_cli_commands(manager, args, role, label, purpose, task_resolution, attach_requires_confirmation),
+        "nextCliCommands": orient_next_cli_commands(manager, args, role, label, purpose, task_resolution, attach_requires_confirmation, orientation_scope, project_resolution),
         "handoffRequirements": ORIENT_HANDOFF_REQUIREMENTS,
         "hubReceiptExpected": ORIENT_HUB_RECEIPT_FIELDS,
         "suggestedExternalSkills": role_external_skills(role),
@@ -4423,6 +4610,7 @@ def cmd_orient_thread(args: argparse.Namespace) -> int:
             resolvedProject=bool(project_resolution.get("resolvedProject")),
             resolvedTask=bool(task_resolution.get("resolved")),
             routingStatus=task_resolution.get("routingStatus", project_resolution.get("routingStatus", "")),
+            orientationScope=orientation_scope,
             sidecarMutated=sidecar_mutated,
             suggestedExternalSkillCount=len(role_external_skills(role)),
         )
@@ -6004,6 +6192,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(orient_parser)
     orient_parser.add_argument("--role", required=True, help="Thread role or role alias, for example research, discussion, execution, or project-hub.")
     orient_parser.add_argument("--query", required=True, help="Topic, task, or project phrase used for project and task routing.")
+    orient_parser.add_argument("--scope", choices=["project-level", "task-level", "worktree-level"], help="Orientation scope. Project-level avoids binding feature worktrees.")
     orient_parser.add_argument("--task-id", help="Optional task id hint to attach or route to.")
     orient_parser.add_argument("--parent-task-id", help="Optional parent task id for attach mode.")
     orient_parser.add_argument("--phase", help="Optional task phase for attach mode.")
