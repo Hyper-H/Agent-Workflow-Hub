@@ -239,6 +239,8 @@ Use $agent-workflow-hub, you are a research thread about external skills for Age
 
 `orient-thread` 默认只报告，不写 sidecar。它会识别可能的 project、canonical `threadRole`、role boundary、task route、建议下一步、handoff 要求和可选 companion skills。只有用 `--attach` 重新运行时才会写入 sidecar。
 
+当主题是整个项目、全局方向、项目 roadmap、研究路线或 hub/discussion/research 的 project-level 问题时，使用 `orient-thread --scope project-level`。project-level orientation 只把 canonical repo/project 路径当作 `storageAnchor`，把匹配到的 feature worktree 放进 `relatedCandidates`，除非用户明确选择某个 feature scope，否则不能把 thread 绑定到 feature worktree。
+
 如果 route 是 inferred、ambiguous、mismatch，或来自非 Git 路径，`--attach` 必须同时使用 `--confirm-route`。建议的 external skills 只是 advisory metadata，不是必需依赖，也不会自动安装。
 
 ## Sidecar 状态

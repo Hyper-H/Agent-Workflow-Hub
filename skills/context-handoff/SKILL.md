@@ -75,8 +75,11 @@ This compatibility entrypoint supports the same V2.8 routing actions as `$agent-
 When the user says this is a new research, discussion, execution, hub, review, validation, dogfood, or explainer thread, run `orient-thread` first with `--role <role>` and `--query "<topic or task phrase>"`.
 
 - `orient-thread` is report-only by default. It should identify the likely project, canonical thread role, role boundary, task route, first recommended action, handoff expectations, and optional companion skills without writing sidecar state.
+- Use `--scope project-level` when a research/discussion/hub topic is about the whole project, global direction, project roadmap, research route, or phrases such as `整个`, `全局`, `项目`, `研究路线`, `roadmap`, `overall`, or `project direction`.
+- For project-level research/discussion, do not bind the thread to a feature worktree just because a related execution task matched. Treat execution matches as `relatedCandidates`; use the canonical repo/project `storageAnchor` only as storage context, not task scope.
 - If it recommends `resume-query`, run that before creating new sidecar state.
 - If it recommends `attach-thread` or `orient-thread --attach`, attach only when the route is confirmed or the user explicitly confirms. Inferred, ambiguous, mismatch, or non-Git-derived routes require `--confirm-route`.
+- Do not turn an ambiguous task route into a confirmed feature binding with `--attach --confirm-route`. Ask once, or attach a project-level/provisional thread task with `--scope project-level`.
 - If external helper skills are suggested but unavailable, do not block. Continue with built-in tools and record the missing support as an unknown or risk.
 - Do not treat suggested external skills as required dependencies; do not install skills automatically.
 

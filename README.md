@@ -243,6 +243,8 @@ Use $agent-workflow-hub, you are a research thread about external skills for Age
 
 `orient-thread` is report-only by default. It identifies the likely project, canonical `threadRole`, role boundary, task route, recommended next action, handoff expectations, and optional companion skills. It does not write sidecar state unless rerun with `--attach`.
 
+For whole-project research, discussion, hub, roadmap, or overall direction topics, use `orient-thread --scope project-level`. Project-level orientation uses the canonical repo/project path only as a `storageAnchor`, keeps feature worktree matches as `relatedCandidates`, and must not bind the thread to a feature worktree unless the user explicitly chooses that feature scope.
+
 If the route is inferred, ambiguous, mismatch, or derived from a non-Git path, `--attach` requires `--confirm-route`. Suggested external skills are advisory metadata, not required dependencies, and are never installed automatically.
 
 ## Sidecar State
