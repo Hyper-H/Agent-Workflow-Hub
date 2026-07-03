@@ -225,6 +225,8 @@ Task aliases are supported:
 
 `resolve-task` returns short JSON with `resolved`, `confidence`, `taskId`, `branch`, `worktreePath`, `matchedFields`, `candidates`, and `disambiguationQuestion`. High-confidence matches can be resumed automatically by `resume-query`; low-confidence or close candidates return one question instead of guessing.
 
+Handoffs can store a user-facing `continuePhrase`, such as `continue image quality research` or `继续图像质量 research`. Users should not need to copy full handoff Markdown or remember `taskId` / `handoffPath`; a future thread can use `resume-query` with the phrase from the compact receipt.
+
 Project discovery records `canonicalRepoRoot`, `projectContainerRoots`, and `knownWorktreeRoots` in local sidecar config. This lets a hub thread route from a non-Git container directory to a known project when there is a single clear match. If multiple projects match, the CLI returns candidates and asks for disambiguation.
 
 `start-feature` and `handoff` are guarded on non-Git paths. By default they refuse to create or update sidecar task state from a container directory and return guidance to use `resume-query` or a real worktree path. Use `--allow-non-git-worktree` only when the user explicitly wants to record a non-Git directory.
@@ -285,7 +287,7 @@ Base branch can be overridden with `--base-branch dev`; the value is persisted i
 - `resolve-task`: Resolve a natural-language query to a sidecar task without resuming.
 - `resume-feature`: Recover compact context, stale detection, and a `startThreadSummary`.
 - `resume-query`: Resolve a natural-language query, then run sidecar-first resume on the matched worktree when confidence is high.
-- `handoff`: Save incomplete work, next step, facts, inferences, unknowns, validation, and safety rules.
+- `handoff`: Save incomplete work, next step, facts, inferences, unknowns, validation, safety rules, optional `continuePhrase`, and a compact user-facing receipt.
 - `audit-context`: Report missing handoff, stale git state, missing validation, missing safety rules, dirty worktree, and backfill prompts.
 - `audit-project`: Audit all Git worktrees for a project hub inventory, compare real worktrees with sidecar active tasks, and generate branch-level backfill prompts, recommended actions, execution-thread prompts, and cleanup prompts.
 - `finish-feature`: Archive the task and generate PR title/body; create a PR only when explicitly requested and GitHub CLI is ready.

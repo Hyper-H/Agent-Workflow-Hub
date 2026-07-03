@@ -548,6 +548,9 @@ def compact_task(task: dict[str, Any]) -> dict[str, Any]:
         "routingNeedsReview": bool(task.get("routingNeedsReview", False)),
         "routingEvidence": task.get("routingEvidence", []),
         "routingCandidates": task.get("routingCandidates", []),
+        "continuePhrase": task.get("continuePhrase", ""),
+        "compactReceipt": task.get("compactReceipt", ""),
+        "receiptUpdatedAt": task.get("receiptUpdatedAt", ""),
         "goal": task.get("goal", ""),
         "branch": task.get("branch", ""),
         "baseBranch": task.get("baseBranch", ""),
@@ -588,6 +591,104 @@ def bool_label(value: bool) -> str:
 
 def normalized_dedupe_key(value: str) -> str:
     return " ".join(value.casefold().split())
+
+
+def humanize_identifier(value: str) -> str:
+    value = (value or "").strip()
+    if not value:
+        return ""
+    return re.sub(r"[-_]+", " ", value).strip()
+
+
+def continue_prefix(language: str) -> str:
+    return "继续" if normalize_language(language) == "zh-CN" else "continue"
+
+
+def strip_continue_prefix(value: str) -> str:
+    value = (value or "").strip()
+    if not value:
+        return ""
+    lowered = value.casefold()
+    for prefix in ["继续", "continue", "resume"]:
+        prefix_lower = prefix.casefold()
+        if lowered == prefix_lower:
+            return ""
+        if lowered.startswith(prefix_lower + " "):
+            return value[len(prefix):].strip()
+    return value
+
+
+def is_suitable_continue_phrase(value: str) -> bool:
+    value = " ".join((value or "").split())
+    return bool(3 <= len(value) <= 96)
+
+
+def generate_continue_phrase(task: dict[str, Any], language: str, explicit: str = "") -> str:
+    explicit = " ".join((explicit or "").split())
+    if explicit:
+        return short_text(explicit, max_len=96)
+    existing = " ".join(str(task.get("continuePhrase") or "").split())
+    if is_suitable_continue_phrase(existing):
+        return short_text(existing, max_len=96)
+    name = ""
+    for alias in task.get("aliases") or []:
+        alias_text = str(alias).strip()
+        if 2 <= len(alias_text) <= 72:
+            name = alias_text
+            break
+    if not name:
+        name = str(task.get("threadLabel") or "").strip()
+    if not name:
+        name = humanize_identifier(str(task.get("taskId") or ""))
+    name = strip_continue_prefix(name)
+    if not name:
+        name = str(task.get("taskId") or "this task")
+    return short_text(f"{continue_prefix(language)} {name}".strip(), max_len=96)
+
+
+def compact_receipt_lines(task: dict[str, Any], args: argparse.Namespace, continue_phrase: str, handoff_path: Path, language: str) -> list[str]:
+    name = task.get("threadLabel") or task.get("goal") or humanize_identifier(task.get("taskId", "")) or task.get("taskId", "")
+    summary = (
+        getattr(args, "thread_summary", None)
+        or next((item for item in (getattr(args, "done", None) or []) if item and item.strip()), "")
+        or task.get("lastThreadSummary")
+        or task.get("goal")
+        or ""
+    )
+    if not summary:
+        summary = "工作流状态已保存。" if normalize_language(language) == "zh-CN" else "Workflow state saved."
+    risks = [item.strip() for item in (getattr(args, "risks", None) or []) if item and item.strip()]
+    blocker = str(task.get("blocker") or "").strip()
+    lines = [f"{'已保存' if normalize_language(language) == 'zh-CN' else 'Saved'}: {short_text(str(name), max_len=120)}"]
+    if summary:
+        lines.append(short_text(str(summary), max_len=160))
+    if task.get("nextStep"):
+        label = "下一步" if normalize_language(language) == "zh-CN" else "Next"
+        lines.append(f"{label}: {short_text(str(task.get('nextStep')), max_len=160)}")
+    if blocker or risks:
+        label = "风险/阻塞" if normalize_language(language) == "zh-CN" else "Risks/blockers"
+        risk_text = blocker or risks[0]
+        lines.append(f"{label}: {short_text(risk_text, max_len=160)}")
+    next_label = "下次可以直接说" if normalize_language(language) == "zh-CN" else "Next time say"
+    lines.append(f"{next_label}: {continue_phrase}")
+    return lines[:5]
+
+
+def build_compact_receipt(task: dict[str, Any], args: argparse.Namespace, continue_phrase: str, handoff_path: Path, language: str) -> str:
+    return "\n".join(compact_receipt_lines(task, args, continue_phrase, handoff_path, language))
+
+
+def build_user_facing_receipt(task: dict[str, Any], args: argparse.Namespace, continue_phrase: str, compact_receipt: str) -> dict[str, Any]:
+    risks = [item.strip() for item in (getattr(args, "risks", None) or []) if item and item.strip()]
+    return {
+        "title": task.get("threadLabel") or task.get("goal") or humanize_identifier(task.get("taskId", "")) or task.get("taskId", ""),
+        "summary": getattr(args, "thread_summary", None) or task.get("lastThreadSummary") or task.get("goal", ""),
+        "nextStep": task.get("nextStep", ""),
+        "risks": risks,
+        "blocker": task.get("blocker", ""),
+        "continuePhrase": continue_phrase,
+        "compactReceipt": compact_receipt,
+    }
 
 
 def unique_normalized_nonempty(values: list[str], limit: int | None = None) -> list[str]:
@@ -1487,6 +1588,9 @@ class SidecarManager:
             task.setdefault("dirtyFiles", [])
             task.setdefault("dirtyFingerprint", "")
             task.setdefault("validation", {})
+            task.setdefault("continuePhrase", "")
+            task.setdefault("compactReceipt", "")
+            task.setdefault("receiptUpdatedAt", "")
             task.setdefault("facts", [])
             task.setdefault("inferences", [])
             task.setdefault("unknowns", [])
@@ -1608,6 +1712,9 @@ class SidecarManager:
             "routingEvidence": ["created from current Git worktree"] if self.git.is_git_worktree else ["created from non-Git path"],
             "routingNeedsReview": not self.git.is_git_worktree,
             "routingCandidates": [],
+            "continuePhrase": "",
+            "compactReceipt": "",
+            "receiptUpdatedAt": "",
             "goal": "",
             "branch": self.git.branch,
             "baseBranch": self.git.base_branch,
@@ -1683,6 +1790,12 @@ class SidecarManager:
             task["threadPurpose"] = short_text(args.thread_purpose, max_len=320)
         else:
             task.setdefault("threadPurpose", "")
+        if getattr(args, "continue_phrase", None) is not None:
+            task["continuePhrase"] = short_text(args.continue_phrase, max_len=96)
+        else:
+            task.setdefault("continuePhrase", "")
+        task.setdefault("compactReceipt", "")
+        task.setdefault("receiptUpdatedAt", "")
         if route:
             apply_route_metadata(task, route)
         else:
@@ -1827,6 +1940,7 @@ def build_handoff_markdown(task: dict[str, Any], args: argparse.Namespace, manag
         f"- Thread Role: {task.get('threadRole') or tr(language, 'none')}",
         f"- Thread Label: {task.get('threadLabel') or tr(language, 'none')}",
         f"- Thread Purpose: {task.get('threadPurpose') or tr(language, 'none')}",
+        f"- Continue Phrase: {task.get('continuePhrase') or tr(language, 'none')}",
         f"- Routing: {task.get('routingStatus') or tr(language, 'none')} (needsReview={bool_label(bool(task.get('routingNeedsReview')))}, confidence={task.get('routingConfidence', tr(language, 'none'))})",
         f"- {tr(language, 'branch')}: {task.get('branch') or manager.git.branch}",
         f"- {tr(language, 'base_branch')}: {task.get('baseBranch') or manager.git.base_branch}",
@@ -1837,6 +1951,9 @@ def build_handoff_markdown(task: dict[str, Any], args: argparse.Namespace, manag
         f"- PR: {pr_url or 'None'}",
         f"- PR Search: {pr_search_url or 'None'}",
         f"- {tr(language, 'updated_at')}: {task.get('updatedAt') or now_iso()}",
+        "",
+        "## Compact Receipt",
+        task.get("compactReceipt") or tr(language, "none_recorded"),
         "",
         f"## {tr(language, 'current_objective')}",
         current_objective,
@@ -2106,6 +2223,7 @@ def build_start_thread_summary(
         f"{tr(language, 'branch')}: {task.get('branch') or manager.git.branch}",
         f"{tr(language, 'worktree')}: {task.get('worktreePath') or str(manager.git.worktree_path)}",
         f"{tr(language, 'status')}: {task.get('status') or 'active'}",
+        f"Continue: {task.get('continuePhrase') or tr(language, 'not_recorded')}",
         f"{tr(language, 'handoff_available')}: {tr(language, 'available') if handoff_available else tr(language, 'missing')}",
         f"{tr(language, 'stale')}: {tr(language, 'yes') if stale.get('isStale') else tr(language, 'no')}",
     ]
@@ -2771,6 +2889,8 @@ def base_visual_row_from_task(task: dict[str, Any], *, archived: bool = False) -
         "threadRole": task.get("threadRole", "") or "primary-execution",
         "threadLabel": task.get("threadLabel", ""),
         "threadPurpose": task.get("threadPurpose", ""),
+        "continuePhrase": task.get("continuePhrase", ""),
+        "compactReceipt": task.get("compactReceipt", ""),
         "parentTaskId": task.get("parentTaskId", ""),
         "phase": task.get("phase", ""),
         "routingStatus": task.get("routingStatus", ""),
@@ -2828,6 +2948,8 @@ def build_visual_project_payload(manager: SidecarManager, include_archive: bool,
             row["threadRole"] = task.get("threadRole", "")
             row["threadLabel"] = task.get("threadLabel", "")
             row["threadPurpose"] = task.get("threadPurpose", "")
+            row["continuePhrase"] = task.get("continuePhrase", "")
+            row["compactReceipt"] = task.get("compactReceipt", "")
             row["routingStatus"] = task.get("routingStatus", "")
             row["routingConfidence"] = task.get("routingConfidence", None)
             row["routingNeedsReview"] = bool(task.get("routingNeedsReview", False))
@@ -3131,8 +3253,8 @@ def build_visual_project_markdown(report: dict[str, Any]) -> str:
             "",
             f"## {visual_text(language, 'details')}",
             "",
-            f"| {visual_text(language, 'task')} | {visual_text(language, 'parent_task')} | {visual_text(language, 'phase')} | {visual_text(language, 'worktree')} | {visual_text(language, 'thread_role')} | {visual_text(language, 'thread_label')} | {visual_text(language, 'routing')} | {visual_text(language, 'health')} | {visual_text(language, 'handoff')} | {visual_text(language, 'validation')} | {visual_text(language, 'safety')} | {visual_text(language, 'dirty_stale')} | {visual_text(language, 'action')} |",
-            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+            f"| {visual_text(language, 'task')} | {visual_text(language, 'parent_task')} | {visual_text(language, 'phase')} | {visual_text(language, 'worktree')} | {visual_text(language, 'thread_role')} | {visual_text(language, 'thread_label')} | Continue | {visual_text(language, 'routing')} | {visual_text(language, 'health')} | {visual_text(language, 'handoff')} | {visual_text(language, 'validation')} | {visual_text(language, 'safety')} | {visual_text(language, 'dirty_stale')} | {visual_text(language, 'action')} |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
         ]
     )
     for row in report.get("taskRows", []):
@@ -3147,6 +3269,7 @@ def build_visual_project_markdown(report: dict[str, Any]) -> str:
                     markdown_cell(Path(str(row.get("worktreePath") or "")).name or visual_text(language, "missing")),
                     markdown_cell(row.get("threadRole", "")),
                     markdown_cell(row.get("threadLabel", "")),
+                    markdown_cell(row.get("continuePhrase", "")),
                     markdown_cell(f"{row.get('routingStatus') or 'none'}; review={bool_label(bool(row.get('routingNeedsReview')))}"),
                     markdown_cell(row.get("health", "")),
                     markdown_cell(bool_label(bool(row.get("handoffAvailable")))),
@@ -3372,6 +3495,8 @@ def score_task_candidate(manager: SidecarManager, task: dict[str, Any], query: s
     fields: list[tuple[str, str, float]] = []
     for alias in task.get("aliases") or []:
         fields.append(("aliases", str(alias), 1.0))
+    if task.get("continuePhrase"):
+        fields.append(("continuePhrase", str(task.get("continuePhrase")), 0.94))
     for alias in generated_task_aliases(task):
         fields.append(("generatedAliases", alias, 0.88))
     for field, weight in [
@@ -3404,6 +3529,7 @@ def score_task_candidate(manager: SidecarManager, task: dict[str, Any], query: s
     q_tokens = query_tokens(query)
     combined = " ".join(str(task.get(field) or "") for field in ["taskId", "branch", "goal", "lastThreadSummary"])
     combined += " " + " ".join(str(item) for item in task.get("aliases") or [])
+    combined += " " + str(task.get("continuePhrase") or "")
     combined += " " + " ".join(str(item) for item in task.get("touchedAreas") or [])
     combined_tokens = query_tokens(combined)
     token_score = (len(q_tokens & combined_tokens) / len(q_tokens)) if q_tokens else 0.0
@@ -3420,6 +3546,7 @@ def score_task_candidate(manager: SidecarManager, task: dict[str, Any], query: s
         "threadRole": task.get("threadRole", ""),
         "threadLabel": task.get("threadLabel", ""),
         "threadPurpose": task.get("threadPurpose", ""),
+        "continuePhrase": task.get("continuePhrase", ""),
         "routingStatus": task.get("routingStatus", ""),
         "routingNeedsReview": bool(task.get("routingNeedsReview", False)),
         "confidence": round(confidence, 3),
@@ -4375,6 +4502,7 @@ def cmd_attach_thread(args: argparse.Namespace) -> int:
                 "threadRole": task.get("threadRole", ""),
                 "threadLabel": task.get("threadLabel", ""),
                 "threadPurpose": task.get("threadPurpose", ""),
+                "continuePhrase": task.get("continuePhrase", ""),
                 "routingStatus": task.get("routingStatus", ""),
                 "routingConfidence": task.get("routingConfidence", None),
                 "routingNeedsReview": bool(task.get("routingNeedsReview", False)),
@@ -4728,6 +4856,8 @@ def cmd_resume_query(args: argparse.Namespace) -> int:
         "threadRole": task.get("threadRole", ""),
         "threadLabel": task.get("threadLabel", ""),
         "threadPurpose": task.get("threadPurpose", ""),
+        "continuePhrase": task.get("continuePhrase", ""),
+        "compactReceipt": task.get("compactReceipt", ""),
         "routingStatus": task.get("routingStatus", resolution.get("routingStatus", "")),
         "routingConfidence": task.get("routingConfidence", resolution.get("routingConfidence", resolution.get("confidence", 0.0))),
         "routingNeedsReview": bool(task.get("routingNeedsReview", resolution.get("routingNeedsReview", False))),
@@ -5706,6 +5836,11 @@ def cmd_handoff(args: argparse.Namespace) -> int:
     task = manager.upsert_task(payload, task, args, route=route)
 
     handoff_path = manager.handoff_path_for(task)
+    continue_phrase = generate_continue_phrase(task, language, getattr(args, "continue_phrase", "") or "")
+    compact_receipt = build_compact_receipt(task, args, continue_phrase, handoff_path, language)
+    task["continuePhrase"] = continue_phrase
+    task["compactReceipt"] = compact_receipt
+    task["receiptUpdatedAt"] = now_iso()
     handoff_content = build_handoff_markdown(task, args, manager, language)
     with file_lock(handoff_path):
         atomic_write_text(handoff_path, handoff_content)
@@ -5731,6 +5866,17 @@ def cmd_handoff(args: argparse.Namespace) -> int:
                 "status": task["status"],
                 "routingStatus": task.get("routingStatus", ""),
                 "routingNeedsReview": bool(task.get("routingNeedsReview", False)),
+                "continuePhrase": continue_phrase,
+                "compactReceipt": compact_receipt,
+                "userFacingReceipt": build_user_facing_receipt(task, args, continue_phrase, compact_receipt),
+                "machineReceipt": {
+                    "projectId": manager.project_id,
+                    "taskId": task["taskId"],
+                    "threadRole": task.get("threadRole", ""),
+                    "threadLabel": task.get("threadLabel", ""),
+                    "handoffPath": str(handoff_path),
+                    "routingStatus": task.get("routingStatus", ""),
+                },
                 "handoffPath": str(handoff_path),
                 "activeTasksPath": str(manager.active_tasks_path),
                 "updatedAt": task["updatedAt"],
@@ -6124,6 +6270,7 @@ def build_parser() -> argparse.ArgumentParser:
         subparser.add_argument("--thread-role")
         subparser.add_argument("--thread-label")
         subparser.add_argument("--thread-purpose")
+        subparser.add_argument("--continue-phrase")
         subparser.add_argument("--confirm-route", action="store_true")
         subparser.add_argument("--routing-evidence", action="append")
         subparser.add_argument("--goal")

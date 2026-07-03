@@ -223,6 +223,8 @@ Task alias 支持：
 - `alias-task --remove-alias "markerless clean"` 删除 alias。
 - 程序生成的 alias 会参与匹配，但不会污染 task 的持久化 `aliases`。
 
+handoff 可以保存面向用户的 `continuePhrase`，例如 `继续图像质量 research` 或 `continue image quality research`。用户不需要复制完整 handoff Markdown，也不需要记住 `taskId` / `handoffPath`；新 thread 可以直接用 compact receipt 里的这句话跑 `resume-query`。
+
 `start-feature` 和 `handoff` 默认会拒绝在非 Git 路径上创建或更新 sidecar task/handoff，并返回 guidance，建议使用 `resume-query` 或提供真实 worktree path。只有用户明确要记录非 Git 目录时，才使用 `--allow-non-git-worktree`。
 
 V3.5 增加 route guard 和 thread attachment metadata。写入型 action 会检查请求内容里明确出现的 task、branch、worktree hints；如果这些 hints 和当前 cwd 冲突，CLI 会返回 `routingStatus: "mismatch"` 或 `"ambiguous"`，不会静默写进当前 branch task。对于 agent 推断出的关系，sidecar 会记录 `routingStatus`、`routingConfidence`、`routingEvidence` 和 `routingNeedsReview`，方便 hub UI 显示“推断路由待确认”。
@@ -277,7 +279,7 @@ base branch 可以用 `--base-branch dev` 覆盖；该值会持久化到本地 s
 - `attach-thread`：把 thread role、label、purpose、parent task、phase 和 routing review metadata 记录到 sidecar task。
 - `orient-thread`：用 role 和简短 query 给新 thread 做自我定位。默认只报告；会建议 project/task route、role boundary、下一条 CLI 命令、handoff 要求和可选 companion skills。
 - `resume-feature`：恢复紧凑上下文、stale detection，并输出 `startThreadSummary`。
-- `handoff`：保存未完成工作、下一步、facts、inferences、unknowns、validation 和 safety rules。
+- `handoff`：保存未完成工作、下一步、facts、inferences、unknowns、validation、safety rules、可选 `continuePhrase` 和紧凑用户回执。
 - `audit-context`：报告当前 worktree 缺 handoff、stale git 状态、缺 validation、缺 safetyRules、dirty worktree 和 backfill prompts。
 - `audit-project`：审计所有 Git worktree，对比真实 worktree 与 sidecar active tasks，并生成按 branch/worktree 分组的 backfill prompts、recommended actions、execution-thread prompts 和 cleanup prompts。
 - `finish-feature`：归档任务并生成 PR 标题/正文；只有用户明确要求且 GitHub CLI 就绪时才创建 PR。
