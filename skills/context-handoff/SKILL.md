@@ -71,6 +71,37 @@ This compatibility entrypoint supports the same V2.8 routing actions as `$agent-
 - Persist only user-confirmed aliases with `start-feature --alias`, `handoff --alias`, or `alias-task --alias`. `continuePhrase` also participates in matching below exact aliases and above generated aliases. Generated aliases participate in matching but are not written to task `aliases`.
 - The resolver is local and deterministic: normalized strings, token overlap, and `difflib`; no LLMs, embeddings, vectors, UI, MCP, or thread API.
 
+## Handoff Loading
+
+Use `load-handoff` when a new thread needs saved sidecar/handoff context from an older thread. Prefer `$agent-workflow-hub` wording in new prompts, but this compatibility entrypoint supports the same behavior.
+
+- For same-role continuation in a new thread, first run `resume-query --query "<continue phrase or task>"`, then run `load-handoff --query "<same phrase>" --mode compact`.
+- Compact mode is the default and should return a short receipt, next step, risks/blockers, and continue phrase without pasting full Markdown.
+- Use `--mode section --section validation --reason validation-needed` for validation threads.
+- Use section mode for review/discussion follow-up when only facts, risks, next step, validation, or thread summary are needed.
+- Use `--mode full` only when the user explicitly asks for the complete handoff, or when compact/section output is insufficient for a concrete continuation question.
+- If ambiguous, ask the returned disambiguation question once. If the handoff is missing, report the missing Markdown and use `resume-feature`, `audit-context`, or targeted investigation.
+- Hub threads should prefer `audit-project`, `project-status`, compact receipts, and recommended actions over full handoff loading.
+- `load-handoff` logs telemetry about mode, section, reason, role, and content size, not handoff content or chat transcripts.
+
+When a discussion, research, or hub thread outputs an implementation plan, add one short recommendation:
+
+```text
+Execution target recommendation: open a new Primary Execution Thread.
+```
+
+or:
+
+```text
+Execution target recommendation: continue the existing execution thread.
+```
+
+or:
+
+```text
+Execution target recommendation: ask before choosing.
+```
+
 ## New Thread Self-Orientation
 
 When the user says this is a new research, discussion, execution, hub, review, validation, dogfood, or explainer thread, run `orient-thread` first with `--role <role>` and `--query "<topic or task phrase>"`.
@@ -187,6 +218,7 @@ You are a Dogfood/QA Thread for <project>. threadRole: dogfood. Feedback: <obser
 - `resume-feature`: Recover compact task state, latest handoff availability, stable docs, git status, and next-step hints. Use when taking over or continuing a branch.
 - `resume-query`: Resolve a natural-language query and resume the matched worktree when confidence is high. Use when the user says "continue <nickname>".
 - `handoff`: Save incomplete work, next step, blockers, touched areas, facts, inferences, unknowns, validation commands/results/time, safety rules, concise thread summary, `continuePhrase`, and compact human-facing receipt.
+- `load-handoff`: Load saved sidecar/handoff context by task id, natural-language query, or current worktree. Defaults to compact receipt; section/full loading requires explicit mode and is logged for audit.
 - `audit-context`: Check whether the current context is trustworthy before handoff/resume. It reports missing handoff, stale HEAD/dirty files, missing validation, missing safety rules, dirty worktree, and backfill prompts.
 - `audit-project`: Project hub inventory for all Git worktrees. It compares real `git worktree list` output with sidecar active tasks, audits every worktree, and reports untracked worktrees, stale tasks, missing validation/safety/handoff, recommended actions, execution-thread prompts, and cleanup prompts.
 - `rebaseline-project`: Safely refresh the current project hub/task baseline after many PRs or versions have merged. It inspects Git, active/archived sidecar tasks, recent merged PRs when `gh` is available, and audit-project-style findings. By default it only recommends changes; use `--update-current-hub-task` to write a fresh hub task/handoff and `--confirm-archive-stale` only after human confirmation to archive stale historical active tasks.
@@ -209,6 +241,7 @@ You are a Dogfood/QA Thread for <project>. threadRole: dogfood. Feedback: <obser
 - Before the first action in a project, run the bundled CLI with the current worktree path. Prefer `doctor` before `setup` when the project has not used the sidecar before.
 - If the user says "start this feature", "track this branch", or gives a feature goal, run `start-feature` with `--goal` and optional `--next-step`.
 - If the user says "continue <task nickname>" from a hub or container context, run `resume-query --query "<task nickname>"` and follow its confidence/disambiguation output.
+- If this is a new thread continuing previous saved work, run `resume-query` first and then `load-handoff --mode compact`. Escalate to `--mode section` or `--mode full` only when needed.
 - If the user says "you are a <role> thread", "as a <role> execution/research/discussion thread", or opens a new role-specific thread with a topic, run `orient-thread --role <role> --query "<topic>"` first.
 - If the user says "take over", "resume", "where are we", or "continue this worktree", run `resume-feature`, then summarize only the useful context and next step.
 - If the user asks to audit trustworthiness, run `audit-context` and summarize findings plus backfill prompts.

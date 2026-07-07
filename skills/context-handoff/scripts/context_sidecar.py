@@ -23,6 +23,36 @@ VALID_STATUSES = {"active", "paused", "blocked", "review", "validation"}
 VALID_PHASES = {"implementation", "validation", "post-merge-validation", "follow-up", "bugfix"}
 VALID_THREAD_ROLES = {"hub", "primary-execution", "discussion", "research", "review", "validation", "dogfood", "explainer"}
 VALID_ROUTING_STATUSES = {"confirmed", "inferred", "ambiguous", "mismatch", "provisional"}
+LOAD_HANDOFF_MODES = {"compact", "section", "full"}
+LOAD_HANDOFF_SECTIONS = {
+    "meta",
+    "receipt",
+    "objective",
+    "facts",
+    "inferences",
+    "unknowns",
+    "safety",
+    "done",
+    "not-done",
+    "blocker",
+    "touched-areas",
+    "key-files",
+    "next-step",
+    "validation",
+    "risks",
+    "thread-summary",
+}
+LOAD_HANDOFF_REASONS = {
+    "resume",
+    "validation-needed",
+    "decision-trace",
+    "route-mismatch",
+    "stale-head",
+    "compact-insufficient",
+    "debug",
+    "user-asked",
+    "other",
+}
 SIDECAR_VERSION = 2
 GH_AUTH_STATUS_TIMEOUT_SECONDS = 15
 DOGFOOD_ISSUE_LABELS = ["agent-reported", "needs-triage"]
@@ -2002,6 +2032,140 @@ def build_handoff_markdown(task: dict[str, Any], args: argparse.Namespace, manag
     return "\n".join(lines)
 
 
+SECTION_ALIASES = {
+    "meta": ["meta"],
+    "receipt": ["compact receipt"],
+    "objective": ["current objective"],
+    "facts": ["facts"],
+    "inferences": ["inferences"],
+    "unknowns": ["unknowns"],
+    "safety": ["safety rules"],
+    "done": ["done"],
+    "not-done": ["not done"],
+    "blocker": ["blocker"],
+    "touched-areas": ["touched areas"],
+    "key-files": ["key files"],
+    "next-step": ["suggested next step"],
+    "validation": ["validation status", "validation"],
+    "risks": ["risks"],
+    "thread-summary": ["thread summary"],
+}
+
+
+def normalize_heading(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
+
+
+def parse_handoff_sections(markdown: str) -> dict[str, str]:
+    sections: dict[str, list[str]] = {}
+    current = ""
+    for line in markdown.splitlines():
+        match = re.match(r"^##\s+(.+?)\s*$", line)
+        if match:
+            current = normalize_heading(match.group(1))
+            sections[current] = [line]
+            continue
+        if current:
+            sections[current].append(line)
+    return {key: "\n".join(lines).strip() for key, lines in sections.items()}
+
+
+def handoff_section(markdown: str, section: str) -> tuple[str, str]:
+    sections = parse_handoff_sections(markdown)
+    wanted = SECTION_ALIASES.get(section, [section])
+    for alias in wanted:
+        normalized = normalize_heading(alias)
+        if normalized in sections:
+            return normalized, sections[normalized]
+    return "", ""
+
+
+def task_for_load_handoff(manager: SidecarManager, payload: dict[str, Any], args: argparse.Namespace, language: str) -> tuple[dict[str, Any] | None, str, dict[str, Any]]:
+    if getattr(args, "task_id", None):
+        task = task_by_id(manager, payload, slugify(args.task_id))
+        return task, "task-id", {"resolved": bool(task), "taskId": slugify(args.task_id)}
+    if getattr(args, "query", None):
+        resolution = resolve_task_from_payload(manager, payload, args.query, language)
+        if resolution.get("resolved"):
+            return task_by_id(manager, payload, resolution.get("taskId", "")), "query", resolution
+        return None, "query", resolution
+    task, conflicts = manager.find_task(payload)
+    return task, "current-worktree", {"resolved": bool(task), "conflicts": conflicts}
+
+
+def build_load_handoff_output(
+    manager: SidecarManager,
+    task: dict[str, Any] | None,
+    *,
+    mode: str,
+    section: str,
+    reason: str,
+    reason_note: str,
+    resolved_by: str,
+    resolution: dict[str, Any],
+    language: str,
+) -> dict[str, Any]:
+    task_id = str((task or {}).get("taskId") or resolution.get("taskId") or "")
+    handoff_path = manager.handoff_path_for(task) if task else manager.handoffs_dir / f"{task_id}.md"
+    handoff_available = bool(task and handoff_path.exists())
+    if handoff_available:
+        with handoff_path.open("r", encoding="utf-8-sig", errors="replace") as handle:
+            markdown = handle.read()
+    else:
+        markdown = ""
+    content = ""
+    content_returned = False
+    selected_section = ""
+    if handoff_available:
+        if mode == "full":
+            content = markdown
+            content_returned = True
+        elif mode == "section":
+            selected_section, content = handoff_section(markdown, section)
+            content_returned = bool(content)
+        else:
+            receipt = str((task or {}).get("compactReceipt") or "").strip()
+            lines = [
+                f"{'任务' if normalize_language(language) == 'zh-CN' else 'Task'}: {task_id}",
+                f"{'状态' if normalize_language(language) == 'zh-CN' else 'Status'}: {(task or {}).get('status') or 'active'}",
+            ]
+            if receipt:
+                lines.extend(receipt.splitlines()[:5])
+            else:
+                if (task or {}).get("goal"):
+                    lines.append(f"{tr(language, 'goal')}: {task.get('goal')}")
+                if (task or {}).get("nextStep"):
+                    lines.append(f"{tr(language, 'suggested_next_step')}: {task.get('nextStep')}")
+                if (task or {}).get("blocker"):
+                    lines.append(f"{tr(language, 'blocker')}: {task.get('blocker')}")
+            if (task or {}).get("continuePhrase"):
+                lines.append(f"Continue: {task.get('continuePhrase')}")
+            content = "\n".join(unique_nonempty([short_text(line, max_len=220) for line in lines], limit=8))
+            content_returned = bool(content)
+    return {
+        "projectId": manager.project_id,
+        "taskId": task_id,
+        "threadRole": (task or {}).get("threadRole", ""),
+        "threadLabel": (task or {}).get("threadLabel", ""),
+        "continuePhrase": (task or {}).get("continuePhrase", ""),
+        "mode": mode,
+        "section": section if mode == "section" else "",
+        "selectedSection": selected_section,
+        "reasonCode": reason,
+        "reasonNotePresent": bool(reason_note.strip()),
+        "resolvedBy": resolved_by,
+        "resolution": resolution,
+        "handoffPath": str(handoff_path),
+        "handoffAvailable": handoff_available,
+        "contentReturned": content_returned,
+        "contentChars": len(content),
+        "content": content,
+        "fullMarkdownReturned": mode == "full" and content_returned,
+        "repoMutated": False,
+        "sidecarMutated": False,
+    }
+
+
 def build_pr_text(task: dict[str, Any], manager: SidecarManager, args: argparse.Namespace) -> tuple[str, str]:
     title = args.pr_title or f"{task.get('branch') or manager.git.branch}: {task.get('goal') or 'complete feature'}"
     body_lines = [
@@ -2571,7 +2735,7 @@ def build_eval_report_payload(
         name = str(event.get("event") or "unknown")
         action_counts[name] = action_counts.get(name, 0) + 1
 
-    tracked_actions = ["resume", "handoff", "audit-context", "audit-project", "finish", "resume-query", "resolve-task"]
+    tracked_actions = ["resume", "handoff", "load-handoff", "audit-context", "audit-project", "finish", "resume-query", "resolve-task"]
     usage_counts = {
         "totalEvents": len(events),
         "actionCounts": dict(sorted(action_counts.items())),
@@ -2608,6 +2772,30 @@ def build_eval_report_payload(
         "failedOrNoMatchCount": failed_count,
         "resolvedRate": percent(resolved_count, len(routing_events)),
         "averageConfidence": round(sum(confidences) / len(confidences), 3) if confidences else 0.0,
+    }
+
+    load_handoff_events = [event for event in events if event.get("event") == "load-handoff"]
+
+    def distribution(field: str, event_list: list[dict[str, Any]]) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for event in event_list:
+            value = str(event.get(field) or "unspecified")
+            counts[value] = counts.get(value, 0) + 1
+        return dict(sorted(counts.items()))
+
+    mode_counts = distribution("loadMode", load_handoff_events)
+    full_load_count = mode_counts.get("full", 0)
+    handoff_loading_metrics = {
+        "loadHandoffCount": len(load_handoff_events),
+        "modeCounts": mode_counts,
+        "compactCount": mode_counts.get("compact", 0),
+        "sectionCount": mode_counts.get("section", 0),
+        "fullCount": full_load_count,
+        "fullLoadRate": percent(full_load_count, len(load_handoff_events)),
+        "reasonCodeCounts": distribution("reasonCode", load_handoff_events),
+        "sectionCounts": distribution("section", [event for event in load_handoff_events if event.get("section")]),
+        "threadRoleCounts": distribution("threadRole", load_handoff_events),
+        "compactInsufficientCount": sum(1 for event in load_handoff_events if event.get("reasonCode") == "compact-insufficient"),
     }
 
     coverage_metrics = current_coverage_metrics(manager, payload)
@@ -2649,6 +2837,7 @@ def build_eval_report_payload(
         "usageCounts": usage_counts,
         "recoveryMetrics": recovery_metrics,
         "routingMetrics": routing_metrics,
+        "handoffLoadingMetrics": handoff_loading_metrics,
         "coverageMetrics": coverage_metrics,
         "proxyEfficiencyMetrics": proxy_efficiency,
         "dataQualityNotes": unique_nonempty(notes),
@@ -2660,6 +2849,7 @@ def build_eval_report_markdown(report: dict[str, Any]) -> str:
     usage = report["usageCounts"]
     recovery = report["recoveryMetrics"]
     routing = report["routingMetrics"]
+    handoff_loading = report.get("handoffLoadingMetrics", {})
     coverage = report["coverageMetrics"]
     efficiency = report["proxyEfficiencyMetrics"]
     action_counts = usage.get("actionCounts", {})
@@ -2693,6 +2883,15 @@ def build_eval_report_markdown(report: dict[str, Any]) -> str:
             f"- Needs disambiguation: {routing['disambiguationCount']}",
             f"- Failed/no match: {routing['failedOrNoMatchCount']}",
             f"- Average confidence: {routing['averageConfidence']}",
+            "",
+            "## Handoff Loading",
+            f"- Load-handoff events: {handoff_loading.get('loadHandoffCount', 0)}",
+            f"- Compact / section / full: {handoff_loading.get('compactCount', 0)} / {handoff_loading.get('sectionCount', 0)} / {handoff_loading.get('fullCount', 0)}",
+            f"- Full load rate: {handoff_loading.get('fullLoadRate', 0.0)}%",
+            f"- Compact-insufficient count: {handoff_loading.get('compactInsufficientCount', 0)}",
+            f"- Reasons: {json.dumps(handoff_loading.get('reasonCodeCounts', {}), ensure_ascii=False)}",
+            f"- Sections: {json.dumps(handoff_loading.get('sectionCounts', {}), ensure_ascii=False)}",
+            f"- Thread roles: {json.dumps(handoff_loading.get('threadRoleCounts', {}), ensure_ascii=False)}",
             "",
             "## Coverage",
             f"- Git worktrees: {coverage['gitWorktrees']}",
@@ -3581,7 +3780,8 @@ def resolve_task_from_payload(manager: SidecarManager, payload: dict[str, Any], 
     second = candidates[1] if len(candidates) > 1 else None
     top_score = float((top or {}).get("confidence", 0.0))
     second_score = float((second or {}).get("confidence", 0.0))
-    clearly_best = bool(top and top_score >= 0.72 and (top_score - second_score >= 0.14 or top_score >= 0.9))
+    high_confidence_unique = top_score >= 0.9 and (not second or second_score < 0.9)
+    clearly_best = bool(top and top_score >= 0.72 and (top_score - second_score >= 0.14 or high_confidence_unique))
     question = ""
     if not candidates:
         question = tr(language, "resolver_no_match", query=query)
@@ -5888,6 +6088,87 @@ def cmd_handoff(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_load_handoff(args: argparse.Namespace) -> int:
+    started_at = time.perf_counter()
+    manager = make_manager(args)
+    language = resolve_language(args, manager)
+    payload = manager.load_active_tasks()
+    mode = getattr(args, "mode", "compact") or "compact"
+    section = getattr(args, "section", "") or ""
+    reason = getattr(args, "reason", "resume") or "resume"
+    reason_note = getattr(args, "reason_note", "") or ""
+    if mode == "section" and not section:
+        raise SystemExit("load-handoff --mode section requires --section")
+    task, resolved_by, resolution = task_for_load_handoff(manager, payload, args, language)
+    if resolved_by == "query" and not resolution.get("resolved"):
+        output = {
+            "projectId": manager.project_id,
+            "mode": mode,
+            "section": section if mode == "section" else "",
+            "reasonCode": reason,
+            "reasonNotePresent": bool(reason_note.strip()),
+            "resolvedBy": resolved_by,
+            "resolution": resolution,
+            "handoffAvailable": False,
+            "contentReturned": False,
+            "contentChars": 0,
+            "content": "",
+            "repoMutated": False,
+            "sidecarMutated": False,
+        }
+        manager.log_event(
+            "load-handoff",
+            started_at=started_at,
+            task_id=resolution.get("taskId", ""),
+            sidecar_hit=False,
+            handoff_available=False,
+            scan_scope="sidecar-handoff-load",
+            threadRole="",
+            loadMode=mode,
+            section=section if mode == "section" else "",
+            reasonCode=reason,
+            reasonNotePresent=bool(reason_note.strip()),
+            contentReturned=False,
+            contentChars=0,
+            resolvedBy=resolved_by,
+            resolved=False,
+            needsDisambiguation=bool(resolution.get("disambiguationQuestion")),
+            candidateCount=len(resolution.get("candidates", [])),
+        )
+        print(json.dumps(output, ensure_ascii=False, indent=2))
+        return 0
+
+    output = build_load_handoff_output(
+        manager,
+        task,
+        mode=mode,
+        section=section,
+        reason=reason,
+        reason_note=reason_note,
+        resolved_by=resolved_by,
+        resolution=resolution,
+        language=language,
+    )
+    manager.log_event(
+        "load-handoff",
+        started_at=started_at,
+        task_id=output.get("taskId", ""),
+        sidecar_hit=bool(task),
+        handoff_available=output.get("handoffAvailable"),
+        scan_scope="sidecar-handoff-load",
+        threadRole=output.get("threadRole", ""),
+        loadMode=mode,
+        section=section if mode == "section" else "",
+        reasonCode=reason,
+        reasonNotePresent=bool(reason_note.strip()),
+        contentReturned=bool(output.get("contentReturned")),
+        contentChars=int(output.get("contentChars") or 0),
+        resolvedBy=resolved_by,
+    )
+    print(json.dumps(output, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_archive(args: argparse.Namespace) -> int:
     started_at = time.perf_counter()
     manager = make_manager(args)
@@ -6408,6 +6689,16 @@ def build_parser() -> argparse.ArgumentParser:
     handoff_parser.add_argument("--risk", dest="risks", action="append")
     handoff_parser.add_argument("--key-file", dest="key_files", action="append")
     handoff_parser.set_defaults(func=cmd_handoff)
+
+    load_handoff_parser = subparsers.add_parser("load-handoff", help="Load compact, section, or explicit full handoff content from sidecar state")
+    add_common(load_handoff_parser)
+    load_handoff_parser.add_argument("--query", help="Natural-language task query, continue phrase, alias, branch, or worktree hint.")
+    load_handoff_parser.add_argument("--task-id", help="Task id to load. Takes precedence over --query.")
+    load_handoff_parser.add_argument("--mode", choices=sorted(LOAD_HANDOFF_MODES), default="compact", help="Load compact receipt by default; section/full require explicit mode.")
+    load_handoff_parser.add_argument("--section", choices=sorted(LOAD_HANDOFF_SECTIONS), default="", help="Handoff section to load when --mode section is used.")
+    load_handoff_parser.add_argument("--reason", choices=sorted(LOAD_HANDOFF_REASONS), default="resume", help="Audit reason for this handoff load.")
+    load_handoff_parser.add_argument("--reason-note", default="", help="Short optional note; only presence is recorded in events.")
+    load_handoff_parser.set_defaults(func=cmd_load_handoff)
 
     archive_parser = subparsers.add_parser("archive", help="Archive the current task and remove it from active tasks")
     add_common(archive_parser)

@@ -12,6 +12,8 @@ The normal interface is conversation:
 Use $agent-workflow-hub to resume this worktree.
 ```
 
+Direct plan-to-execution remains the primary workflow: a discussion or research thread should give the user a complete execution prompt and plan, and the user can paste that into a Primary Execution Thread. V3.9 adds `load-handoff` for later continuity: when an old thread is too long, unavailable, or split into review/validation, a new thread can load a compact receipt or specific handoff section without pasting the full handoff Markdown.
+
 The primary skill bundles its own Python sidecar CLI under `skills/agent-workflow-hub/scripts/`, so users do not need to know where the CLI lives. The compatibility skill under `skills/context-handoff/` uses the same CLI and sidecar data.
 
 
@@ -91,6 +93,10 @@ Use $agent-workflow-hub to act as the markerless execution thread.
 
 ```text
 Use $agent-workflow-hub to save a handoff before I stop today.
+```
+
+```text
+Use $agent-workflow-hub to continue AWH V3.9 handoff loading audit in a new thread.
 ```
 
 ```text
@@ -227,6 +233,31 @@ Task aliases are supported:
 
 Handoffs can store a user-facing `continuePhrase`, such as `continue image quality research` or `继续图像质量 research`. Users should not need to copy full handoff Markdown or remember `taskId` / `handoffPath`; a future thread can use `resume-query` with the phrase from the compact receipt.
 
+## Thread Continuity And Handoff Loading
+
+`load-handoff` lets a new thread load saved workflow state by `--task-id`, `--query`, or the current worktree. It is deliberately explicit and audit-friendly:
+
+- Default `--mode compact` returns the compact receipt, next step, risks/blockers, and continue phrase instead of the full Markdown handoff.
+- `--mode section --section validation` or another section loads only the requested `##` section for review/validation/discussion follow-up.
+- `--mode full` returns the whole handoff only when explicitly requested.
+- Ambiguous `--query` returns candidates and one disambiguation question instead of guessing.
+- Every load logs lightweight telemetry to `events.jsonl`; it records mode, section, reason, role, and content size, not the handoff body.
+
+Example:
+
+```text
+Use $agent-workflow-hub first. If only $context-handoff is available, use it as the compatible entrypoint.
+Continue AWH V3.9 handoff loading audit.
+```
+
+For a validation thread:
+
+```text
+load-handoff --query "continue AWH V3.9 handoff loading audit" --mode section --section validation --reason validation-needed
+```
+
+See [docs/workflows/thread-continuity.md](./docs/workflows/thread-continuity.md) and [docs/reference/handoff-loading.md](./docs/reference/handoff-loading.md).
+
 Project discovery records `canonicalRepoRoot`, `projectContainerRoots`, and `knownWorktreeRoots` in local sidecar config. This lets a hub thread route from a non-Git container directory to a known project when there is a single clear match. If multiple projects match, the CLI returns candidates and asks for disambiguation.
 
 `start-feature` and `handoff` are guarded on non-Git paths. By default they refuse to create or update sidecar task state from a container directory and return guidance to use `resume-query` or a real worktree path. Use `--allow-non-git-worktree` only when the user explicitly wants to record a non-Git directory.
@@ -288,6 +319,7 @@ Base branch can be overridden with `--base-branch dev`; the value is persisted i
 - `resume-feature`: Recover compact context, stale detection, and a `startThreadSummary`.
 - `resume-query`: Resolve a natural-language query, then run sidecar-first resume on the matched worktree when confidence is high.
 - `handoff`: Save incomplete work, next step, facts, inferences, unknowns, validation, safety rules, optional `continuePhrase`, and a compact user-facing receipt.
+- `load-handoff`: Load saved handoff context. Defaults to compact receipt; section/full modes require explicit request and are logged for audit.
 - `audit-context`: Report missing handoff, stale git state, missing validation, missing safety rules, dirty worktree, and backfill prompts.
 - `audit-project`: Audit all Git worktrees for a project hub inventory, compare real worktrees with sidecar active tasks, and generate branch-level backfill prompts, recommended actions, execution-thread prompts, and cleanup prompts.
 - `finish-feature`: Archive the task and generate PR title/body; create a PR only when explicitly requested and GitHub CLI is ready.
@@ -391,4 +423,4 @@ hygiene-dogfood --confirm-archive --task-id <id>
 
 `events.jsonl` records lightweight lifecycle events for future evaluation. It is not a full benchmark by itself. See [docs/research/agent-workflow-hub-v2-benchmark.md](./docs/research/context-handoff-v2-benchmark.md) for the planned comparison between no shared context, stable repo docs only, and sidecar + handoff.
 
-`weekly-report` is for project progress. `eval-report` is for Agent Workflow Hub effectiveness: usage counts, recovery health, routing health, coverage, and proxy efficiency metrics. It deliberately avoids exact token-saving claims.
+`weekly-report` is for project progress. `eval-report` is for Agent Workflow Hub effectiveness: usage counts, recovery health, routing health, handoff loading behavior, coverage, and proxy efficiency metrics. It deliberately avoids exact token-saving claims.
