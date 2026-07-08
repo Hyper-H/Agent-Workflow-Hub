@@ -92,8 +92,14 @@ DOGFOOD_HYGIENE_PASS_TERMS = [
     "smoke passed",
 ]
 DOGFOOD_HYGIENE_ARCHIVE_REASON = "stale dogfood/smoke record superseded by later passing validation"
-ORIENT_HUB_RECEIPT_FIELDS = ["taskId", "threadRole", "routingStatus", "handoffPath", "durable findings", "nextStep", "risks"]
-ORIENT_HANDOFF_REQUIREMENTS = ["facts", "inferences", "unknowns", "decisions", "risks", "nextStep"]
+ORIENT_HUB_RECEIPT_FIELDS = ["taskId", "threadRole", "routingStatus", "scope", "boundary", "possible next paths", "risks/unknowns"]
+ORIENT_HANDOFF_REQUIREMENTS = ["event-driven only", "durable facts/findings", "inferences", "unknowns", "decisions", "risks", "nextStep"]
+ORIENT_STARTUP_PROTOCOL = [
+    "run orient-thread",
+    "summarize scope, boundary, and possible next paths",
+    "wait for user direction before research, execution, audit, validation, web search, or heavy handoff",
+    "save handoff only when durable state should survive, when passing work to another role/agent, before stopping after meaningful work, or when the user asks",
+]
 ROLE_BOUNDARIES = {
     "hub": "Hub threads maintain the global project map, routing, prioritization, project inventory, summaries, and follow-up prompts. They do not own feature implementation details.",
     "discussion": "Discussion threads shape internal project, product, and engineering tradeoffs. They do not create worktrees or modify code unless implementation begins.",
@@ -4289,18 +4295,25 @@ def role_external_skills(role: str) -> list[dict[str, Any]]:
             {
                 "skill": "domain-specific implementation skills when relevant",
                 "roles": ["primary-execution"],
-                "reason": "Use only when the task domain clearly benefits from a specialist workflow.",
+                "reason": "Advisory during startup; use only after the user asks to begin implementation and the task domain clearly benefits from a specialist workflow.",
                 "fallback": "Continue with repo-local investigation, implementation, and validation.",
             }
         ]
-    return ROLE_EXTERNAL_SKILLS.get(role, [])
+    skills = []
+    for item in ROLE_EXTERNAL_SKILLS.get(role, []):
+        copy = dict(item)
+        reason = str(copy.get("reason") or "")
+        if "Advisory during startup" not in reason:
+            copy["reason"] = f"Advisory during startup; use only after the user asks to begin the work. {reason}".strip()
+        skills.append(copy)
+    return skills
 
 
 def orient_recommended_next_action(task_resolution: dict[str, Any], attach: bool, attach_requires_confirmation: bool, orientation_scope: str = "task-level") -> str:
+    if not attach:
+        return "wait-for-user-direction"
     if is_project_level_scope(orientation_scope):
-        if attach:
-            return "attach-project-thread"
-        return "orient-thread --attach --scope project-level"
+        return "attach-project-thread"
     if task_resolution.get("resolved"):
         return "resume-query"
     if attach:
@@ -4311,6 +4324,22 @@ def orient_recommended_next_action(task_resolution: dict[str, Any], attach: bool
 
 
 def orient_next_cli_commands(
+    manager: SidecarManager,
+    args: argparse.Namespace,
+    role: str,
+    label: str,
+    purpose: str,
+    task_resolution: dict[str, Any],
+    attach_requires_confirmation: bool,
+    orientation_scope: str = "task-level",
+    project_resolution: dict[str, Any] | None = None,
+) -> list[str]:
+    if not getattr(args, "attach", False):
+        return []
+    return orient_optional_next_cli_commands(manager, args, role, label, purpose, task_resolution, attach_requires_confirmation, orientation_scope, project_resolution)
+
+
+def orient_optional_next_cli_commands(
     manager: SidecarManager,
     args: argparse.Namespace,
     role: str,
@@ -4356,7 +4385,6 @@ def orient_next_cli_commands(
     if getattr(args, "phase", None):
         attach_parts.extend(["--phase", shlex.quote(args.phase)])
     commands.append(" ".join(attach_parts))
-    commands.append(f"handoff --worktree {quoted_worktree} --project-id {quoted_project} --task-id {shlex.quote(str(task_resolution.get('taskId') or provisional_task_id_for_query(args.query)))}")
     return commands
 
 
@@ -4752,8 +4780,10 @@ def cmd_orient_thread(args: argparse.Namespace) -> int:
                 "disambiguationQuestion": project_resolution.get("disambiguationQuestion", ""),
             },
             "roleBoundary": ROLE_BOUNDARIES.get(role, ROLE_BOUNDARIES["discussion"]),
+            "startupProtocol": ORIENT_STARTUP_PROTOCOL,
             "recommendedNextAction": "ask-disambiguation",
             "nextCliCommands": [],
+            "optionalNextCliCommands": [],
             "handoffRequirements": ORIENT_HANDOFF_REQUIREMENTS,
             "hubReceiptExpected": ORIENT_HUB_RECEIPT_FIELDS,
             "suggestedExternalSkills": role_external_skills(role),
@@ -4915,8 +4945,10 @@ def cmd_orient_thread(args: argparse.Namespace) -> int:
         "query": args.query,
         "taskResolution": task_resolution,
         "roleBoundary": ROLE_BOUNDARIES.get(role, ROLE_BOUNDARIES["discussion"]),
+        "startupProtocol": ORIENT_STARTUP_PROTOCOL,
         "recommendedNextAction": recommended_action,
         "nextCliCommands": orient_next_cli_commands(manager, args, role, label, purpose, task_resolution, attach_requires_confirmation, orientation_scope, project_resolution),
+        "optionalNextCliCommands": [] if attach_requested else orient_optional_next_cli_commands(manager, args, role, label, purpose, task_resolution, attach_requires_confirmation, orientation_scope, project_resolution),
         "handoffRequirements": ORIENT_HANDOFF_REQUIREMENTS,
         "hubReceiptExpected": ORIENT_HUB_RECEIPT_FIELDS,
         "suggestedExternalSkills": role_external_skills(role),

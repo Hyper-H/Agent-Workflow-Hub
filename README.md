@@ -100,6 +100,8 @@ Project Hub keeps the map and routing. Discussion and Research shape direction. 
 
 Thread roles are coordination roles, not capability limits. They tell an agent how to participate in the AWH workflow, how to treat sidecar/handoff state, where to report durable outcomes, and when to hand off.
 
+Opening a role thread starts with orientation: scope, boundary, and possible next paths first; research, execution, audits, web search, and durable handoff begin after user direction.
+
 - `hub`: project map, routing, inventory, prioritization, reports, and compact receipts.
 - `discussion`: product, architecture, workflow, and implementation-route shaping.
 - `research`: external evidence, prior art, ecosystem context, baselines, and feasibility.

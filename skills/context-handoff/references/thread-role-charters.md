@@ -11,6 +11,9 @@ Use this reference when the user starts a role-specific thread, asks about role 
 - Re-check stale, decision-heavy, or inherited context against current repo state and current user intent.
 - Preserve uncertainty instead of promoting old hypotheses into facts.
 - Keep dynamic workflow state in sidecar/handoffs, not tracked repo docs.
+- Role startup is orientation, not execution. Opening a role-specific thread should establish scope, boundary, and possible next paths, then wait for user direction before starting research, implementation, audit, validation, web search, or heavy handoff work.
+- Handoff is event-driven, not startup-driven or turn-driven. Save handoff state when durable findings/state should survive the chat, when passing work to another role/agent, before stopping after meaningful work, or when the user asks.
+- External helper skills are advisory until the user asks to begin that work. Do not invoke academic, research, validation, browser, or other specialist workflows during startup just because a role could use them later.
 - Prefer direct plan-to-execution when the user needs implementation: discussion/research/hub threads should recommend the execution target rather than silently becoming execution.
 
 ## Shared Vocabulary
@@ -113,6 +116,8 @@ Boundary: do not become a project hub or execution owner.
 - Section handoff is targeted evidence.
 - Full handoff is for continuity-heavy questions or explicit user requests.
 - No handoff loading mode makes old context authoritative by itself.
+- A newly opened role thread may need no handoff at all if it only oriented itself and no durable state changed.
+- A research thread should not treat possible research directions as required output. Choose the structure that fits the user's request and available evidence.
 
 When a discussion, research, or hub thread outputs an implementation plan, include one execution target recommendation:
 
