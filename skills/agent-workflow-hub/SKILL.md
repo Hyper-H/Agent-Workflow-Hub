@@ -58,6 +58,7 @@ Use `resolve-task` and `resume-query` when the user names a task informally inst
 
 - Prefer `resume-query --query "<user phrase>"` when the user clearly wants to continue work and you have any known project/worktree path.
 - Chinese/natural-language takeover phrases such as `接手 <task>`, `继续 <task>`, `恢复 <task>`, `你是 <task> 的执行进程`, and `作为 <task> execution thread` must route to `resume-query --query "<task>"` first.
+- If a prior handoff gave a phrase like `继续图像质量 research` or `continue image quality research`, use that whole phrase with `resume-query`; users should not need to remember `taskId` or `handoffPath`.
 - Use `resume-feature` only when the user explicitly says `当前 worktree`, `this worktree`, or otherwise clearly means the already-selected Git worktree.
 - Use `resolve-task --query "<user phrase>"` when you only need to route, inspect candidates, or decide which execution thread/worktree should receive the next prompt.
 - If `resolved: true`, continue from the returned `cd` / `worktreePath` and summarize the compact resume fields instead of pasting full JSON.
@@ -68,7 +69,40 @@ Use `resolve-task` and `resume-query` when the user names a task informally inst
 - `resume-query` is sidecar-first, git-aware, and scan-minimal.
 - `resume-feature` and `resume-query` restore recorded workflow state; they do not prove correctness or replace validation, PR review, or targeted investigation.
 - The resolver is deterministic and local: aliases, taskId, branch, worktree basename, goal, handoff summary, and touchedAreas are matched with normalized strings, token overlap, and `difflib`. It does not use LLMs, embeddings, vectors, UI, MCP, or thread APIs.
+- `continuePhrase` participates in matching below exact user aliases and above generated aliases.
 - `touchedAreas` and `touchedFiles` are evidence/locator signals, not a required first scan path.
+
+## Handoff Loading
+
+Use `load-handoff` when a new thread needs saved sidecar/handoff context from an older thread. This is a continuation and audit tool; it does not replace the normal path where a discussion/research thread gives the user a complete execution prompt and plan to paste into a Primary Execution Thread.
+
+- For same-role continuation in a new thread, first run `resume-query --query "<continue phrase or task>"`, then run `load-handoff --query "<same phrase>" --mode compact`.
+- Compact mode is the default. It should return the short receipt, next step, risks/blockers, and continue phrase without pasting full Markdown.
+- Use `--mode section --section validation --reason validation-needed` for validation threads.
+- Use `--mode section --section risks`, `--section thread-summary`, `--section facts`, or `--section next-step` for review/discussion follow-up when compact output is insufficient.
+- Use `--mode full` only when the user explicitly asks for the complete handoff, or when a compact/section load cannot answer a concrete continuation question.
+- If `load-handoff` returns ambiguous candidates, ask the returned disambiguation question once; do not guess.
+- If no handoff is available, say that the sidecar task exists but the Markdown handoff is missing, then use `resume-feature`, `audit-context`, or targeted investigation as appropriate.
+- Hub threads should prefer `audit-project`, `project-status`, compact receipts, and recommended actions over full handoff loading.
+- `load-handoff` logs only short telemetry such as mode, section, reason, role, and content size. It must not log handoff content, long reasoning, diffs, or chat transcripts.
+
+When a discussion, research, or hub thread outputs an implementation plan, add one short user-facing recommendation without reading full handoffs just for that recommendation:
+
+```text
+Execution target recommendation: open a new Primary Execution Thread.
+```
+
+or:
+
+```text
+Execution target recommendation: continue the existing execution thread.
+```
+
+or:
+
+```text
+Execution target recommendation: ask before choosing.
+```
 
 Task aliases:
 
@@ -141,7 +175,7 @@ State handoff rules:
 
 - The Project Hub Thread should not own every implementation detail. It should keep the map, inventory, routing decisions, and links or summaries from execution threads.
 - The Primary Execution Thread must update sidecar state with `start-feature`, `resume-feature`, `handoff`, `audit-context`, and `finish-feature` as appropriate.
-- Completion summaries from execution threads should include what changed, validation, unresolved risks, PR status, and the sidecar handoff/archive path when available.
+- Completion summaries from execution threads should lead with the handoff `compactReceipt` and `continuePhrase`, then include machine/debug details such as taskId, handoffPath, validation, unresolved risks, PR status, and archive path when useful.
 - Discussion, side chat, explainer, dogfood, and subagent results become durable only after their useful decisions or facts are copied into the hub, the relevant execution thread, or sidecar handoff/audit output.
 - Never treat `project-status` as the whole-project inventory; use `audit-project` for hub-level status.
 
@@ -171,7 +205,7 @@ Primary Execution Thread Handoff:
 
 ```text
 Use $agent-workflow-hub first. If only $context-handoff is available, use it as the compatible entrypoint.
-You are the Primary Execution Thread for <project>/<task>. threadRole: primary-execution. Repo/worktree: <path>. Use resume-query first if the task may already exist; otherwise run resume-feature for this worktree if a task exists, or start-feature with this goal: <goal>. Plan briefly inside this thread, then implement. Keep dynamic state in sidecar/handoffs, not tracked repo docs. Before stopping, run relevant validation, audit-context if useful, and save a handoff with facts, inferences, unknowns, safety rules, validation, blockers, risks, decisions, and nextStep. Report back to the Project Hub with branch, worktree, status, validation, PR/issue links if any, handoff path, and remaining risks.
+You are the Primary Execution Thread for <project>/<task>. threadRole: primary-execution. Repo/worktree: <path>. Use resume-query first if the task may already exist; otherwise run resume-feature for this worktree if a task exists, or start-feature with this goal: <goal>. Plan briefly inside this thread, then implement. Keep dynamic state in sidecar/handoffs, not tracked repo docs. Before stopping, run relevant validation, audit-context if useful, and save a handoff with facts, inferences, unknowns, safety rules, validation, blockers, risks, decisions, nextStep, and a useful --continue-phrase when the user gave one. Report back to the Project Hub with a compact receipt first: concise result, nextStep, risks/blockers, and "Next time say: ..."; then include optional machine details such as taskId, handoffPath, branch, worktree, validation, and PR/issue links.
 ```
 
 Project Hub Thread Handoff:
@@ -197,7 +231,8 @@ You are a Dogfood/QA Thread for <project>. threadRole: dogfood. Feedback: <obser
 - `resolve-task`: Resolve a natural-language query to a sidecar task. Use when routing without resuming.
 - `resume-feature`: Recover compact task state, latest handoff availability, stable docs, git status, and next-step hints. Use when taking over or continuing a branch.
 - `resume-query`: Resolve a natural-language query and resume the matched worktree when confidence is high. Use when the user says "continue <nickname>".
-- `handoff`: Save incomplete work, next step, blockers, touched areas, facts, inferences, unknowns, validation commands/results/time, safety rules, and a concise thread summary.
+- `handoff`: Save incomplete work, next step, blockers, touched areas, facts, inferences, unknowns, validation commands/results/time, safety rules, concise thread summary, `continuePhrase`, and compact human-facing receipt.
+- `load-handoff`: Load saved sidecar/handoff context by task id, natural-language query, or current worktree. Defaults to compact receipt; section/full loading requires explicit mode and is logged for audit.
 - `audit-context`: Check whether the current context is trustworthy before handoff/resume. It reports missing handoff, stale HEAD/dirty files, missing validation, missing safety rules, dirty worktree, and backfill prompts.
 - `audit-project`: Project hub inventory for all Git worktrees. It compares real `git worktree list` output with sidecar active tasks, audits every worktree, and reports untracked worktrees, stale tasks, missing validation/safety/handoff, recommended actions, execution-thread prompts, and cleanup prompts.
 - `rebaseline-project`: Safely refresh the current project hub/task baseline after many PRs or versions have merged. It inspects Git, active/archived sidecar tasks, recent merged PRs when `gh` is available, and audit-project-style findings. By default it only recommends changes; use `--update-current-hub-task` to write a fresh hub task/handoff and `--confirm-archive-stale` only after human confirmation to archive stale historical active tasks.
@@ -220,10 +255,11 @@ You are a Dogfood/QA Thread for <project>. threadRole: dogfood. Feedback: <obser
 - Before the first action in a project, run the bundled CLI with the current worktree path. Prefer `doctor` before `setup` when the project has not used the sidecar before.
 - If the user says "start this feature", "track this branch", or gives a feature goal, run `start-feature` with `--goal` and optional `--next-step`.
 - If the user says "continue <task nickname>" from a hub or container context, run `resume-query --query "<task nickname>"` and follow its confidence/disambiguation output.
+- If this is a new thread continuing previous saved work, run `resume-query` first and then `load-handoff --mode compact`. Escalate to `--mode section` or `--mode full` only when needed.
 - If the user says "you are a <role> thread", "as a <role> execution/research/discussion thread", or opens a new role-specific thread with a topic, run `orient-thread --role <role> --query "<topic>"` first.
 - If the user says "take over", "resume", "where are we", or "continue this worktree", run `resume-feature`, then summarize only the useful context and next step.
 - If the user asks to audit trustworthiness, run `audit-context` and summarize findings plus backfill prompts.
-- If the user is ending a session or passing work to another agent, run `handoff` with concrete done/not-done fields and explicit `--fact`, `--inference`, `--unknown`, `--safety-rule`, `--validation-command`, `--validation-result`, and `--validation-at` values where known.
+- If the user is ending a session or passing work to another agent, run `handoff` with concrete done/not-done fields and explicit `--fact`, `--inference`, `--unknown`, `--safety-rule`, `--validation-command`, `--validation-result`, `--validation-at`, and `--continue-phrase` values where known. Reply with the compact receipt first; taskId and handoffPath are secondary details.
 - If the user says the task is done, run `finish-feature`. Add `--create-pr` only when the user explicitly requests PR creation.
 - If the user reports dogfood/debug feedback, prefer `draft-issue` by default and return the copyable title/body.
 - If the user explicitly says "create issue", "提 issue", or asks to enable dogfood issue mode, use `enable-dogfood-issue-mode` or `create-issue` as appropriate. Never create an issue from inferred intent alone.
@@ -296,9 +332,10 @@ Before creating a GitHub issue, the CLI checks GitHub CLI authentication, search
 
 For single feature actions, return a short conversational summary:
 
+- Lead with `compactReceipt` and the natural-language `continuePhrase` when a handoff was saved.
 - Current task and status.
 - Latest useful next step.
-- Handoff or report path when a file was written.
+- Handoff or report path when useful for debugging or automation.
 - PR URL when known, or generated PR title/body guidance when GitHub CLI is unavailable.
 
 For project hub actions, do not only return a short current-task summary. Always include compact inventory counts, a table of worktrees, grouped backfill prompts, recommended actions, execution-thread prompts, and cleanup prompts. Avoid pasting long sidecar JSON or full weekly reports unless the user asks for detail.
