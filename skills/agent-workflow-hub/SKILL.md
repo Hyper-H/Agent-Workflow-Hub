@@ -120,15 +120,17 @@ Project/container routing:
 
 When the user says this is a new research, discussion, execution, hub, review, validation, dogfood, or explainer thread, run `orient-thread` first with `--role <role>` and `--query "<topic or task phrase>"`.
 
+- Role startup is orientation, not execution. Opening a role-specific thread should run `orient-thread`, summarize scope, boundary, and possible next investigation or execution paths, then wait for user direction.
 - When the user starts a role-specific thread, asks about role behavior, or requests a role-aware handoff or prompt, read `references/thread-role-charters.md` before deciding routing or handoff expectations. The charter defines Agent Workflow Hub coordination behavior, not agent capability; do not treat it as a rigid output template.
 - `orient-thread` is report-only by default. It should identify the likely project, canonical thread role, role boundary, task route, first recommended action, handoff expectations, and optional companion skills without writing sidecar state.
 - Use `--scope project-level` when a research/discussion/hub topic is about the whole project, global direction, project roadmap, research route, or phrases such as `整个`, `全局`, `项目`, `研究路线`, `roadmap`, `overall`, or `project direction`.
 - For project-level research/discussion, do not bind the thread to a feature worktree just because a related execution task matched. Treat execution matches as `relatedCandidates`; use the canonical repo/project `storageAnchor` only as storage context, not task scope.
+- During startup, do not invoke external helper skills, run `eval-report` or `audit-project`, search the web, or write a heavy handoff unless the user explicitly asks to begin that work.
 - If it recommends `resume-query`, run that before creating new sidecar state.
 - If it recommends `attach-thread` or `orient-thread --attach`, attach only when the route is confirmed or the user explicitly confirms. Inferred, ambiguous, mismatch, or non-Git-derived routes require `--confirm-route`.
 - Do not turn an ambiguous task route into a confirmed feature binding with `--attach --confirm-route`. Ask once, or attach a project-level/provisional thread task with `--scope project-level`.
 - If external helper skills are suggested but unavailable, do not block. Continue with built-in tools and record the missing support as an unknown or risk.
-- Do not treat suggested external skills as required dependencies; do not install skills automatically.
+- Do not treat suggested external skills as required dependencies; do not install skills automatically. Suggested external skills are advisory until the user asks to begin the research, investigation, comparison, validation, or implementation.
 
 ## Multi-Thread Workflow Playbook
 
@@ -178,6 +180,7 @@ State handoff rules:
 - The Primary Execution Thread must update sidecar state with `start-feature`, `resume-feature`, `handoff`, `audit-context`, and `finish-feature` as appropriate.
 - Completion summaries from execution threads should lead with the handoff `compactReceipt` and `continuePhrase`, then include machine/debug details such as taskId, handoffPath, validation, unresolved risks, PR status, and archive path when useful.
 - Discussion, side chat, explainer, dogfood, and subagent results become durable only after their useful decisions or facts are copied into the hub, the relevant execution thread, or sidecar handoff/audit output.
+- Handoff is event-driven, not startup-driven or turn-driven. Save a handoff when durable findings/state should survive the chat, when passing work to another role/agent, when stopping after meaningful work, or when the user asks.
 - Never treat `project-status` as the whole-project inventory; use `audit-project` for hub-level status.
 
 Recommended prompt templates:
@@ -192,21 +195,21 @@ Discussion Thread Handoff:
 
 ```text
 Use $agent-workflow-hub first. If only $context-handoff is available, use it as the compatible entrypoint.
-You are a Discussion Thread for <project>. threadRole: discussion. Topic: <topic>. Repo/worktree if known: <path>. Do not create a worktree or modify code unless implementation begins. Use resume-query first if this topic may already exist. If no matching sidecar task exists, start or attach a provisional discussion task with the topic, current facts, and open questions. Keep dynamic state in sidecar/handoffs, not tracked repo docs. Before stopping, save facts, inferences, unknowns, decisions, and nextStep to a sidecar handoff. Report only durable takeaways and requested follow-up back to the Project Hub.
+You are a Discussion Thread for <project>. threadRole: discussion. Topic: <topic>. Repo/worktree if known: <path>. Do not create a worktree or modify code unless implementation begins. Use resume-query first if this topic may already exist. If no matching sidecar task exists, start or attach a provisional discussion task with the topic, current facts, and open questions. Keep dynamic state in sidecar/handoffs, not tracked repo docs. If you only opened/oriented the thread, stop after scope, boundary, and possible next paths. Save a sidecar handoff only when durable facts, inferences, unknowns, decisions, or nextStep should survive this chat, when passing work to another role/agent, or before stopping after meaningful work. Report only durable takeaways and requested follow-up back to the Project Hub.
 ```
 
 Research Thread Handoff:
 
 ```text
 Use $agent-workflow-hub first. If only $context-handoff is available, use it as the compatible entrypoint.
-You are a Research Thread for <project>. threadRole: research. Research topic or paper question: <topic>. Repo/worktree if known: <path>. External academic, literature, reviewer, or paper-planning skills may be used if available. Do not create a worktree or modify code unless implementation begins. Use resume-query first if this research topic, feature, or paper-planning task may already exist. If no matching sidecar task exists, start or attach a provisional research task. Use the agent's own investigation strategy; avoid full scans unless necessary. Required output: engineering facts, paper story, research questions, related work directions/search keywords, novelty hypotheses, baselines, experiments/ablations, publication readiness, engineering tasks serving the paper, unknowns/risks, and next step. Save durable research findings to a sidecar handoff and report the paper-relevant takeaways, risks, and proposed next step back to the Project Hub.
+You are a Research Thread for <project>. threadRole: research. Research topic or paper question: <topic>. Repo/worktree if known: <path>. Do not create a worktree or modify code unless implementation begins. Use resume-query first if this research topic, feature, or paper-planning task may already exist. If no matching sidecar task exists, start or attach a provisional research task. If the user is only opening/orienting the research thread, run orientation, state scope/boundary and possible next paths, then wait for direction. External academic, literature, reviewer, or paper-planning skills are advisory; use them only when the user asks to begin research, investigate, compare, survey, or plan evidence. Use the agent's own investigation strategy; avoid full scans unless necessary. Possible research directions include engineering facts, paper story, research questions, related work directions/search keywords, novelty hypotheses, baselines, experiments/ablations, publication readiness, engineering tasks serving the paper, unknowns/risks, and next step. Choose only the structure that fits the user's request and available evidence. Save durable research findings to a sidecar handoff only when they should survive this chat, when passing work to another role/agent, or before stopping after meaningful work. Report the relevant takeaways, risks, and proposed next step back to the Project Hub when useful.
 ```
 
 Primary Execution Thread Handoff:
 
 ```text
 Use $agent-workflow-hub first. If only $context-handoff is available, use it as the compatible entrypoint.
-You are the Primary Execution Thread for <project>/<task>. threadRole: primary-execution. Repo/worktree: <path>. Use resume-query first if the task may already exist; otherwise run resume-feature for this worktree if a task exists, or start-feature with this goal: <goal>. Plan briefly inside this thread, then implement. Keep dynamic state in sidecar/handoffs, not tracked repo docs. Before stopping, run relevant validation, audit-context if useful, and save a handoff with facts, inferences, unknowns, safety rules, validation, blockers, risks, decisions, nextStep, and a useful --continue-phrase when the user gave one. Report back to the Project Hub with a compact receipt first: concise result, nextStep, risks/blockers, and "Next time say: ..."; then include optional machine details such as taskId, handoffPath, branch, worktree, validation, and PR/issue links.
+You are the Primary Execution Thread for <project>/<task>. threadRole: primary-execution. Repo/worktree: <path>. Use resume-query first if the task may already exist; otherwise run resume-feature for this worktree if a task exists, or start-feature with this goal: <goal>. Plan briefly inside this thread, then implement when the user has asked for execution. Keep dynamic state in sidecar/handoffs, not tracked repo docs. Before stopping after meaningful work, run relevant validation, audit-context if useful, and save a handoff with facts, inferences, unknowns, safety rules, validation, blockers, risks, decisions, nextStep, and a useful --continue-phrase when the user gave one. Report back to the Project Hub with a compact receipt first: concise result, nextStep, risks/blockers, and "Next time say: ..."; then include optional machine details such as taskId, handoffPath, branch, worktree, validation, and PR/issue links.
 ```
 
 Project Hub Thread Handoff:
@@ -220,7 +223,7 @@ Dogfood/QA Thread Handoff:
 
 ```text
 Use $agent-workflow-hub first. If only $context-handoff is available, use it as the compatible entrypoint.
-You are a Dogfood/QA Thread for <project>. threadRole: dogfood. Feedback: <observed behavior>. Expected: <expected behavior>. Repo/worktree if known: <path>. Use resume-query first if this feedback may belong to an existing task or issue. Otherwise start or attach a provisional dogfood/QA task. Keep Facts, Inferences, Unknowns, Reproduction, Suggested Fix, Priority, safety concerns, and nextStep separate. Prefer draft-issue by default. Do not create a GitHub issue unless I explicitly ask or dogfood issue mode is enabled. Save the durable QA findings to a sidecar handoff and report the issue draft/path, priority, and next recommended action back to the Project Hub.
+You are a Dogfood/QA Thread for <project>. threadRole: dogfood. Feedback: <observed behavior>. Expected: <expected behavior>. Repo/worktree if known: <path>. Use resume-query first if this feedback may belong to an existing task or issue. Otherwise start or attach a provisional dogfood/QA task. Keep Facts, Inferences, Unknowns, Reproduction, Suggested Fix, Priority, safety concerns, and nextStep separate. Prefer draft-issue by default. Do not create a GitHub issue unless I explicitly ask or dogfood issue mode is enabled. Save durable QA findings to a sidecar handoff when they should survive this chat, when passing work to another role/agent, or before stopping after meaningful work; report the issue draft/path, priority, and next recommended action back to the Project Hub when useful.
 ```
 
 ## Actions
@@ -228,7 +231,7 @@ You are a Dogfood/QA Thread for <project>. threadRole: dogfood. Feedback: <obser
 - `start-feature`: Create or update the active task for the current branch/worktree. Use when the user starts a new feature or says what this branch is for.
 - `alias-task`: Add or remove user-confirmed task aliases. Use when a user names a durable nickname for a task.
 - `attach-thread`: Attach a thread role, label, purpose, parent task, phase, and routing review metadata to a sidecar task without requiring a code change.
-- `orient-thread`: Orient a new thread from a role and short query. It is report-only by default, suggests project/task routing, role boundaries, next CLI commands, handoff requirements, and optional companion skills. Use `--attach` only when the route is safe or explicitly confirmed.
+- `orient-thread`: Orient a new thread from a role and short query. It is report-only by default, summarizes project/task routing, role boundaries, startup protocol, optional next CLI commands, event-driven handoff expectations, and advisory companion skills. Use `--attach` only when the route is safe or explicitly confirmed.
 - `resolve-task`: Resolve a natural-language query to a sidecar task. Use when routing without resuming.
 - `resume-feature`: Recover compact task state, latest handoff availability, stable docs, git status, and next-step hints. Use when taking over or continuing a branch.
 - `resume-query`: Resolve a natural-language query and resume the matched worktree when confidence is high. Use when the user says "continue <nickname>".

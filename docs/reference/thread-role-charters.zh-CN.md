@@ -29,6 +29,9 @@ charter 有意设计成低锚定：
 - 它把 sidecar 和 handoff state 当作 routing / continuity signals，而不是 proof。
 - 它保留不确定性，避免把旧 hypotheses 升级成 facts。
 - 它把动态状态保存在 sidecar/handoff，而不是 tracked repo docs。
+- 它把 role startup 视为 orientation，而不是 execution。
+- 它把 handoff 视为 event-driven，而不是 startup-driven 或 turn-driven。
+- 它把 external helper skills 视为 advisory，直到用户要求开始那类工作。
 - 它先使用现有 handoff 字段承载实践，不在实践稳定前新增 schema 字段。
 
 agent-facing charter 只用英文，并放在已安装 skill package 内。human-facing docs 做双语，因为用户需要不依赖实现说明也能理解 workflow 设计和 demo。
@@ -67,6 +70,24 @@ agent 行为：
 6. 需要时保存低锚定 handoff，包含 facts、hypotheses、open alternatives、unknowns、risks 和 next step。
 
 重点不是让 agent 遵循 rigid template。重点是它不要把旧项目状态继承成真理，也不要静默变成 execution thread。
+
+用户打开一个 project-level Research Thread：
+
+```text
+Use $agent-workflow-hub first. If only $context-handoff is available, use it as the compatible entrypoint.
+You are a Research Thread for Agent Workflow Hub. threadRole: research. Scope: project-level.
+Topic: Evaluate the project's main research direction.
+```
+
+期望的启动行为：
+
+1. 读取 `SKILL.md`。
+2. 因为用户启动了 role-specific thread，读取 `references/thread-role-charters.md`。
+3. 运行 `orient-thread --role research --scope project-level --query "<topic>"`。
+4. 总结 scope、boundary 和可能的 research paths。
+5. 等待用户方向，再开始 external research、web search、eval/audit actions 或 heavy handoff。
+
+这样可以把“打开 research thread”和“完成一份完整 research report”分开。后者应在用户要求开始调查、比较来源、survey literature、规划 evidence 或产出 findings 时才开始。
 
 ## Role Overview
 
@@ -161,6 +182,14 @@ agent 行为：
 - `disconfirmingEvidenceToSeek`：会削弱当前 hypotheses 的证据。
 
 这些分类首先是写作和 review discipline。只有重复使用证明某个字段应该一等化后，才需要考虑新增 sidecar schema。
+
+## Startup And Handoff Timing
+
+Role startup 是 orientation，不是 execution。新的 role-specific thread 应先建立 scope、boundary 和可能的 next paths，然后等待用户方向。它不应因为某些动作之后可能有用，就自动调用 academic/research helper skills、运行 `eval-report` 或 `audit-project`、搜索 web，或写 heavy handoff。
+
+Handoff 是 event-driven，不是 startup-driven 或 turn-driven。只有当 durable findings/state 应该跨 chat 保留下来、需要把工作交给另一个 role 或 agent、在有意义工作后准备停止，或用户明确要求时，才保存 handoff。一个只完成自我定位的 thread 可以不保存 handoff。
+
+External helper skills 在用户要求开始那类工作前只是 advisory。charter 可以提示可能有用的 helper，但 startup 不应自动变成 specialist workflow。
 
 ## Related Docs
 

@@ -29,6 +29,9 @@ The charter is low-anchor by design:
 - It treats sidecar and handoff state as routing and continuity signals, not proof.
 - It preserves uncertainty instead of promoting old hypotheses into facts.
 - It keeps dynamic state in sidecar/handoffs, not tracked repo docs.
+- It treats role startup as orientation, not execution.
+- It treats handoff as event-driven, not startup-driven or turn-driven.
+- It treats external helper skills as advisory until the user asks to begin that work.
 - It uses existing handoff fields first instead of adding schema fields before the practice is proven.
 
 The agent-facing charter is English-only and lives inside the installed skill package. Human-facing docs are bilingual because users should be able to understand the workflow design and demos without reading implementation instructions.
@@ -67,6 +70,24 @@ Agent behavior:
 6. Save a low-anchor handoff with facts, hypotheses, open alternatives, unknowns, risks, and next step when useful.
 
 The important point is not that the agent follows a rigid template. The important point is that it does not inherit old project state as truth and does not silently become an execution thread.
+
+User opens a project-level Research Thread:
+
+```text
+Use $agent-workflow-hub first. If only $context-handoff is available, use it as the compatible entrypoint.
+You are a Research Thread for Agent Workflow Hub. threadRole: research. Scope: project-level.
+Topic: Evaluate the project's main research direction.
+```
+
+Expected startup behavior:
+
+1. Read `SKILL.md`.
+2. Read `references/thread-role-charters.md` because the user started a role-specific thread.
+3. Run `orient-thread --role research --scope project-level --query "<topic>"`.
+4. Summarize scope, boundary, and possible next research paths.
+5. Wait for user direction before starting external research, web search, eval/audit actions, or a heavy handoff.
+
+This keeps "opening a research thread" distinct from "perform a complete research report." The latter starts when the user asks the thread to begin investigation, compare sources, survey literature, plan evidence, or produce findings.
 
 ## Role Overview
 
@@ -161,6 +182,14 @@ Boundary: do not become a project hub or execution owner.
 - `disconfirmingEvidenceToSeek`: evidence that would weaken current hypotheses.
 
 These categories are a writing and review discipline first. They do not require new sidecar schema until repeated use proves a field should become first-class.
+
+## Startup And Handoff Timing
+
+Role startup is orientation, not execution. A new role-specific thread should establish scope, boundary, and possible next paths, then wait for user direction. It should not automatically invoke academic/research helper skills, run `eval-report` or `audit-project`, search the web, or write a heavy handoff just because those actions might be useful later.
+
+Handoff is event-driven, not startup-driven or turn-driven. Save handoff state when durable findings/state should survive the chat, when passing work to another role or agent, before stopping after meaningful work, or when the user asks. A thread that only oriented itself may not need to save a handoff.
+
+External helper skills are advisory until the user asks to begin that work. The charter can mention likely helpers, but startup should not automatically turn a role into a specialist workflow.
 
 ## Related Docs
 
