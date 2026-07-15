@@ -1320,6 +1320,14 @@ def write_json(path: Path, payload: Any) -> None:
         atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
 
 
+def ensure_json_file(path: Path, payload: Any) -> None:
+    if path.exists():
+        return
+    with file_lock(path):
+        if not path.exists():
+            atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+
+
 def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with file_lock(path):
@@ -1366,6 +1374,7 @@ class SidecarManager:
         self.archive_dir = self.sidecar_root / "archive"
         self.reports_dir = self.sidecar_root / "reports"
         self.events_path = self.sidecar_root / "events.jsonl"
+        self._active_tasks_transaction_depth = 0
 
     def _resolve_project_id(self, project_id_override: str = "") -> str:
         explicit = (project_id_override or "").strip()
@@ -1535,30 +1544,28 @@ class SidecarManager:
         self.handoffs_dir.mkdir(parents=True, exist_ok=True)
         self.archive_dir.mkdir(parents=True, exist_ok=True)
         self.reports_dir.mkdir(parents=True, exist_ok=True)
-        if not self.config_path.exists():
-            write_json(
-                self.config_path,
-                {
-                    "version": SIDECAR_VERSION,
-                    "projectId": self.project_id,
-                    "projectIdSource": self.project_id_source,
-                    "baseBranch": self.base_branch_override or self.git.base_branch,
-                    "canonicalRepoRoot": str(self.git.repo_root),
-                    "repoRoot": str(self.git.repo_root),
-                    "gitCommonDir": str(self.git.common_dir) if self.git.common_dir else "",
-                    "remoteUrl": self.git.remote_url,
-                    "lastWorktreePath": str(self.git.worktree_path),
-                    "currentWorktreePath": str(self.git.worktree_path),
-                    "knownWorktreeRoots": [str(self.git.worktree_path)],
-                    "projectContainerRoots": [str(self.git.repo_root.parent)],
-                    "updatedAt": now_iso(),
-                },
-            )
-        if not self.active_tasks_path.exists():
-            write_json(
-                self.active_tasks_path,
-                {"version": SIDECAR_VERSION, "projectId": self.project_id, "tasks": []},
-            )
+        ensure_json_file(
+            self.config_path,
+            {
+                "version": SIDECAR_VERSION,
+                "projectId": self.project_id,
+                "projectIdSource": self.project_id_source,
+                "baseBranch": self.base_branch_override or self.git.base_branch,
+                "canonicalRepoRoot": str(self.git.repo_root),
+                "repoRoot": str(self.git.repo_root),
+                "gitCommonDir": str(self.git.common_dir) if self.git.common_dir else "",
+                "remoteUrl": self.git.remote_url,
+                "lastWorktreePath": str(self.git.worktree_path),
+                "currentWorktreePath": str(self.git.worktree_path),
+                "knownWorktreeRoots": [str(self.git.worktree_path)],
+                "projectContainerRoots": [str(self.git.repo_root.parent)],
+                "updatedAt": now_iso(),
+            },
+        )
+        ensure_json_file(
+            self.active_tasks_path,
+            {"version": SIDECAR_VERSION, "projectId": self.project_id, "tasks": []},
+        )
 
     def sidecar_config(self) -> dict[str, Any]:
         self.ensure_layout()
@@ -1601,6 +1608,19 @@ class SidecarManager:
         config["updatedAt"] = now_iso()
         write_json(self.config_path, config)
 
+    @contextlib.contextmanager
+    def active_tasks_transaction(self):
+        """Hold the active-task lock across load, mutation, save, and derived-state refresh."""
+        if self._active_tasks_transaction_depth:
+            raise RuntimeError("nested active task transactions are not supported")
+        self.ensure_layout()
+        with file_lock(self.active_tasks_path):
+            self._active_tasks_transaction_depth += 1
+            try:
+                yield self.load_active_tasks()
+            finally:
+                self._active_tasks_transaction_depth -= 1
+
     def load_active_tasks(self) -> dict[str, Any]:
         self.ensure_layout()
         payload = read_json(
@@ -1637,17 +1657,24 @@ class SidecarManager:
             )
             for field in ["facts", "inferences", "unknowns", "safetyRules"]:
                 task[field] = unique_normalized_nonempty([str(item) for item in task.get(field, [])], limit=30)
-        if not self.project_state_path.exists():
-            self.write_project_state(payload.get("tasks", []))
         return payload
 
     def save_active_tasks(self, payload: dict[str, Any]) -> None:
+        if not self._active_tasks_transaction_depth:
+            raise RuntimeError("save_active_tasks requires active_tasks_transaction")
         payload["version"] = SIDECAR_VERSION
         payload["projectId"] = self.project_id
-        write_json(self.active_tasks_path, payload)
+        atomic_write_text(self.active_tasks_path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
         self.write_project_state(payload.get("tasks", []))
 
+    def load_active_tasks_with_project_state(self) -> tuple[dict[str, Any], dict[str, Any]]:
+        with self.active_tasks_transaction() as payload:
+            state = self.write_project_state(payload.get("tasks", []))
+            return payload, state
+
     def write_project_state(self, tasks: list[dict[str, Any]]) -> dict[str, Any]:
+        if not self._active_tasks_transaction_depth:
+            raise RuntimeError("write_project_state requires active_tasks_transaction")
         active_like_tasks = [
             compact_task(task)
             for task in tasks
@@ -3127,9 +3154,8 @@ def base_visual_row_from_task(task: dict[str, Any], *, archived: bool = False) -
 
 
 def build_visual_project_payload(manager: SidecarManager, include_archive: bool, language: str) -> dict[str, Any]:
-    payload = manager.load_active_tasks()
+    payload, state = manager.load_active_tasks_with_project_state()
     tasks = payload.get("tasks", [])
-    state = manager.write_project_state(tasks)
     worktrees, worktree_error = parse_git_worktree_list(manager.git.repo_root)
 
     rows: list[dict[str, Any]] = []
@@ -4593,46 +4619,46 @@ def cmd_start_feature(args: argparse.Namespace) -> int:
     if not manager.git.is_git_worktree and not allow_non_git_worktree(args):
         print(json.dumps(guarded_non_git_write_response(manager, "start-feature"), ensure_ascii=False, indent=2))
         return 0
-    payload = manager.load_active_tasks()
-    route = route_guard_for_write(manager, payload, args, "start-feature")
-    if route.get("routeStatus") in {"mismatch", "ambiguous"}:
-        print(json.dumps({"projectId": manager.project_id, "action": "start-feature", **route}, ensure_ascii=False, indent=2))
-        return 0
-    tasks = payload.get("tasks", [])
-    branch_matches = [item for item in tasks if item.get("branch") == manager.git.branch]
-    worktree_matches = [item for item in tasks if item.get("worktreePath") == str(manager.git.worktree_path)]
-    candidates = sorted(branch_matches, key=lambda item: item.get("updatedAt", ""), reverse=True)
-    if not candidates and worktree_matches:
-        conflicts = [item.get("taskId", "<unknown>") for item in worktree_matches]
-        task = sorted(worktree_matches, key=lambda item: item.get("updatedAt", ""), reverse=True)[0]
+    with manager.active_tasks_transaction() as payload:
+        route = route_guard_for_write(manager, payload, args, "start-feature")
+        if route.get("routeStatus") in {"mismatch", "ambiguous"}:
+            print(json.dumps({"projectId": manager.project_id, "action": "start-feature", **route}, ensure_ascii=False, indent=2))
+            return 0
+        tasks = payload.get("tasks", [])
+        branch_matches = [item for item in tasks if item.get("branch") == manager.git.branch]
+        worktree_matches = [item for item in tasks if item.get("worktreePath") == str(manager.git.worktree_path)]
+        candidates = sorted(branch_matches, key=lambda item: item.get("updatedAt", ""), reverse=True)
+        if not candidates and worktree_matches:
+            conflicts = [item.get("taskId", "<unknown>") for item in worktree_matches]
+            task = sorted(worktree_matches, key=lambda item: item.get("updatedAt", ""), reverse=True)[0]
+            snapshot = manager.task_snapshot(task, conflicts)
+            snapshot.update(
+                {
+                    "createdOrUpdated": False,
+                    "requestedBranch": manager.git.branch,
+                    "resolution": "Current worktree already has an active task for another branch; finish or hand off that task before starting a new branch in this worktree.",
+                }
+            )
+            manager.log_event(
+                "start",
+                task_id=task["taskId"],
+                started_at=started_at,
+                sidecar_hit=True,
+                handoff_available=snapshot["handoffAvailable"],
+                conflict=True,
+                requestedBranch=manager.git.branch,
+            )
+            print(json.dumps(snapshot, ensure_ascii=False, indent=2))
+            return 0
+        explicit_task_id = bool(getattr(args, "task_id", None))
+        task = task_by_id(manager, payload, slugify(args.task_id)) if explicit_task_id else None
+        if task is None and not explicit_task_id:
+            task = candidates[0] if candidates else None
+        conflicts = [] if explicit_task_id else [item.get("taskId", "<unknown>") for item in candidates[1:]]
+        sidecar_hit = task is not None
+        task = manager.upsert_task(payload, task, args, route=route)
+        manager.save_active_tasks(payload)
         snapshot = manager.task_snapshot(task, conflicts)
-        snapshot.update(
-            {
-                "createdOrUpdated": False,
-                "requestedBranch": manager.git.branch,
-                "resolution": "Current worktree already has an active task for another branch; finish or hand off that task before starting a new branch in this worktree.",
-            }
-        )
-        manager.log_event(
-            "start",
-            task_id=task["taskId"],
-            started_at=started_at,
-            sidecar_hit=True,
-            handoff_available=snapshot["handoffAvailable"],
-            conflict=True,
-            requestedBranch=manager.git.branch,
-        )
-        print(json.dumps(snapshot, ensure_ascii=False, indent=2))
-        return 0
-    explicit_task_id = bool(getattr(args, "task_id", None))
-    task = task_by_id(manager, payload, slugify(args.task_id)) if explicit_task_id else None
-    if task is None and not explicit_task_id:
-        task = candidates[0] if candidates else None
-    conflicts = [] if explicit_task_id else [item.get("taskId", "<unknown>") for item in candidates[1:]]
-    sidecar_hit = task is not None
-    task = manager.upsert_task(payload, task, args, route=route)
-    manager.save_active_tasks(payload)
-    snapshot = manager.task_snapshot(task, conflicts)
     manager.log_event(
         "start",
         task_id=task["taskId"],
@@ -4647,23 +4673,23 @@ def cmd_start_feature(args: argparse.Namespace) -> int:
 def cmd_alias_task(args: argparse.Namespace) -> int:
     started_at = time.perf_counter()
     manager = make_manager(args)
-    payload = manager.load_active_tasks()
-    task = task_by_id(manager, payload, slugify(args.task_id)) if getattr(args, "task_id", None) else None
-    conflicts: list[str] = []
-    if task is None:
-        task, conflicts = manager.find_task(payload)
-    if task is None:
-        raise SystemExit("no matching task to alias")
+    with manager.active_tasks_transaction() as payload:
+        task = task_by_id(manager, payload, slugify(args.task_id)) if getattr(args, "task_id", None) else None
+        conflicts: list[str] = []
+        if task is None:
+            task, conflicts = manager.find_task(payload)
+        if task is None:
+            raise SystemExit("no matching task to alias")
 
-    before = list(task.get("aliases") or [])
-    add_aliases = normalized_note_list(getattr(args, "aliases", None), limit=20, max_len=80)
-    remove_keys = {normalized_dedupe_key(item) for item in (getattr(args, "remove_aliases", None) or []) if item.strip()}
-    aliases = unique_normalized_nonempty([*before, *add_aliases], limit=20)
-    if remove_keys:
-        aliases = [item for item in aliases if normalized_dedupe_key(item) not in remove_keys]
-    task["aliases"] = aliases
-    task["updatedAt"] = now_iso()
-    manager.save_active_tasks(payload)
+        before = list(task.get("aliases") or [])
+        add_aliases = normalized_note_list(getattr(args, "aliases", None), limit=20, max_len=80)
+        remove_keys = {normalized_dedupe_key(item) for item in (getattr(args, "remove_aliases", None) or []) if item.strip()}
+        aliases = unique_normalized_nonempty([*before, *add_aliases], limit=20)
+        if remove_keys:
+            aliases = [item for item in aliases if normalized_dedupe_key(item) not in remove_keys]
+        task["aliases"] = aliases
+        task["updatedAt"] = now_iso()
+        manager.save_active_tasks(payload)
     manager.log_event(
         "alias-task",
         task_id=task.get("taskId", ""),
@@ -4697,18 +4723,18 @@ def cmd_attach_thread(args: argparse.Namespace) -> int:
     if not manager.git.is_git_worktree and not allow_non_git_worktree(args):
         print(json.dumps(guarded_non_git_write_response(manager, "attach-thread"), ensure_ascii=False, indent=2))
         return 0
-    payload = manager.load_active_tasks()
-    route = route_guard_for_write(manager, payload, args, "attach-thread")
-    if route.get("routeStatus") in {"mismatch", "ambiguous"}:
-        print(json.dumps({"projectId": manager.project_id, "action": "attach-thread", **route}, ensure_ascii=False, indent=2))
-        return 0
-    task = task_by_id(manager, payload, slugify(args.task_id)) if getattr(args, "task_id", None) else None
-    conflicts: list[str] = []
-    if task is None:
-        task, conflicts = manager.find_task(payload)
-    sidecar_hit = task is not None
-    task = manager.upsert_task(payload, task, args, route=route)
-    manager.save_active_tasks(payload)
+    with manager.active_tasks_transaction() as payload:
+        route = route_guard_for_write(manager, payload, args, "attach-thread")
+        if route.get("routeStatus") in {"mismatch", "ambiguous"}:
+            print(json.dumps({"projectId": manager.project_id, "action": "attach-thread", **route}, ensure_ascii=False, indent=2))
+            return 0
+        task = task_by_id(manager, payload, slugify(args.task_id)) if getattr(args, "task_id", None) else None
+        conflicts: list[str] = []
+        if task is None:
+            task, conflicts = manager.find_task(payload)
+        sidecar_hit = task is not None
+        task = manager.upsert_task(payload, task, args, route=route)
+        manager.save_active_tasks(payload)
     manager.log_event(
         "attach-thread",
         task_id=task.get("taskId", ""),
@@ -4858,76 +4884,76 @@ def cmd_orient_thread(args: argparse.Namespace) -> int:
     if attach_requested and not attach_allowed:
         warnings.append("Attach refused: inferred, ambiguous, mismatch, or non-Git-derived route requires --confirm-route.")
     elif attach_allowed:
-        payload = manager.load_active_tasks()
-        task = task_by_id(manager, payload, slugify(getattr(args, "task_id", "") or task_resolution.get("taskId", "")))
-        if task is None and task_resolution.get("resolved"):
-            task = task_by_id(manager, payload, task_resolution.get("taskId", ""))
-        route_status = "confirmed" if bool(getattr(args, "confirm_route", False)) else str(task_resolution.get("routingStatus") or project_status or "confirmed")
-        if route_status == "confirmed" and project_status != "confirmed":
-            route_status = "inferred"
-        if is_project_level_scope(orientation_scope):
-            route_status = "confirmed" if bool(getattr(args, "confirm_route", False)) else "provisional"
-        route = route_result(
-            route_status,
-            routingNeedsReview=False if is_project_level_scope(orientation_scope) and bool(getattr(args, "confirm_route", False)) else project_status != "confirmed" or task_resolution.get("routingNeedsReview", False),
-            routingConfidence=min(
-                float(project_resolution.get("routingConfidence", 1.0) or 0.0),
-                float(task_resolution.get("routingConfidence", task_resolution.get("confidence", 0.75)) or 0.0),
-            ),
-            routingEvidence=unique_normalized_nonempty(
-                [
-                    *project_resolution.get("routingEvidence", []),
-                    *task_resolution.get("routingEvidence", []),
-                    f"orient-thread role {role}",
-                    f"orientationScope {orientation_scope}",
-                ],
-                limit=20,
-            ),
-            routingCandidates=task_resolution.get("routingCandidates", []) or task_resolution.get("relatedCandidates", []) or task_resolution.get("candidates", [])[:5],
-        )
-        attach_args = orient_attach_args(args, role, label, purpose, task_resolution, orientation_scope)
-        if is_project_level_scope(orientation_scope):
-            attach_args.project_level_orientation = True
-            attach_args.storage_anchor = str(project_resolution.get("storageAnchor") or manager.git.worktree_path)
-        task = manager.upsert_task(
-            payload,
-            task,
-            attach_args,
-            route=route,
-        )
-        if is_project_level_scope(orientation_scope):
-            task["orientationScope"] = orientation_scope
-            task["storageAnchor"] = str(project_resolution.get("storageAnchor") or manager.git.worktree_path)
-            task["branch"] = ""
-            task["worktreePath"] = ""
-            task["repoRoot"] = str(project_resolution.get("storageAnchor") or manager.git.repo_root)
-            task["headSha"] = ""
-            task["upstream"] = ""
-            task["dirtyFiles"] = []
-            task["dirtyFingerprint"] = ""
-            if project_resolution.get("storageAnchor"):
-                task["routingEvidence"] = unique_normalized_nonempty(
+        with manager.active_tasks_transaction() as payload:
+            task = task_by_id(manager, payload, slugify(getattr(args, "task_id", "") or task_resolution.get("taskId", "")))
+            if task is None and task_resolution.get("resolved"):
+                task = task_by_id(manager, payload, task_resolution.get("taskId", ""))
+            route_status = "confirmed" if bool(getattr(args, "confirm_route", False)) else str(task_resolution.get("routingStatus") or project_status or "confirmed")
+            if route_status == "confirmed" and project_status != "confirmed":
+                route_status = "inferred"
+            if is_project_level_scope(orientation_scope):
+                route_status = "confirmed" if bool(getattr(args, "confirm_route", False)) else "provisional"
+            route = route_result(
+                route_status,
+                routingNeedsReview=False if is_project_level_scope(orientation_scope) and bool(getattr(args, "confirm_route", False)) else project_status != "confirmed" or task_resolution.get("routingNeedsReview", False),
+                routingConfidence=min(
+                    float(project_resolution.get("routingConfidence", 1.0) or 0.0),
+                    float(task_resolution.get("routingConfidence", task_resolution.get("confidence", 0.75)) or 0.0),
+                ),
+                routingEvidence=unique_normalized_nonempty(
                     [
-                        *task.get("routingEvidence", []),
-                        "project-level task stores storageAnchor only; branch/worktree scope intentionally left empty",
+                        *project_resolution.get("routingEvidence", []),
+                        *task_resolution.get("routingEvidence", []),
+                        f"orient-thread role {role}",
+                        f"orientationScope {orientation_scope}",
                     ],
-                    limit=30,
-                )
-        manager.save_active_tasks(payload)
-        sidecar_mutated = True
-        attach_result = {
-            "taskId": task.get("taskId", ""),
-            "threadRole": task.get("threadRole", ""),
-            "threadLabel": task.get("threadLabel", ""),
-            "threadPurpose": task.get("threadPurpose", ""),
-            "routingStatus": task.get("routingStatus", ""),
-            "routingConfidence": task.get("routingConfidence", None),
-            "routingNeedsReview": bool(task.get("routingNeedsReview", False)),
-            "orientationScope": task.get("orientationScope", ""),
-            "storageAnchor": task.get("storageAnchor", ""),
-            "activeTasksPath": str(manager.active_tasks_path),
-        }
-        task_resolution["taskId"] = task.get("taskId", task_resolution.get("taskId", ""))
+                    limit=20,
+                ),
+                routingCandidates=task_resolution.get("routingCandidates", []) or task_resolution.get("relatedCandidates", []) or task_resolution.get("candidates", [])[:5],
+            )
+            attach_args = orient_attach_args(args, role, label, purpose, task_resolution, orientation_scope)
+            if is_project_level_scope(orientation_scope):
+                attach_args.project_level_orientation = True
+                attach_args.storage_anchor = str(project_resolution.get("storageAnchor") or manager.git.worktree_path)
+            task = manager.upsert_task(
+                payload,
+                task,
+                attach_args,
+                route=route,
+            )
+            if is_project_level_scope(orientation_scope):
+                task["orientationScope"] = orientation_scope
+                task["storageAnchor"] = str(project_resolution.get("storageAnchor") or manager.git.worktree_path)
+                task["branch"] = ""
+                task["worktreePath"] = ""
+                task["repoRoot"] = str(project_resolution.get("storageAnchor") or manager.git.repo_root)
+                task["headSha"] = ""
+                task["upstream"] = ""
+                task["dirtyFiles"] = []
+                task["dirtyFingerprint"] = ""
+                if project_resolution.get("storageAnchor"):
+                    task["routingEvidence"] = unique_normalized_nonempty(
+                        [
+                            *task.get("routingEvidence", []),
+                            "project-level task stores storageAnchor only; branch/worktree scope intentionally left empty",
+                        ],
+                        limit=30,
+                    )
+            manager.save_active_tasks(payload)
+            sidecar_mutated = True
+            attach_result = {
+                "taskId": task.get("taskId", ""),
+                "threadRole": task.get("threadRole", ""),
+                "threadLabel": task.get("threadLabel", ""),
+                "threadPurpose": task.get("threadPurpose", ""),
+                "routingStatus": task.get("routingStatus", ""),
+                "routingConfidence": task.get("routingConfidence", None),
+                "routingNeedsReview": bool(task.get("routingNeedsReview", False)),
+                "orientationScope": task.get("orientationScope", ""),
+                "storageAnchor": task.get("storageAnchor", ""),
+                "activeTasksPath": str(manager.active_tasks_path),
+            }
+            task_resolution["taskId"] = task.get("taskId", task_resolution.get("taskId", ""))
 
     recommended_action = orient_recommended_next_action(task_resolution, attach_requested, attach_requires_confirmation, orientation_scope)
     output = {
@@ -5703,9 +5729,8 @@ def cmd_audit_project(args: argparse.Namespace) -> int:
     started_at = time.perf_counter()
     manager = make_manager(args)
     language = resolve_language(args, manager)
-    payload = manager.load_active_tasks()
+    payload, state = manager.load_active_tasks_with_project_state()
     tasks = payload.get("tasks", [])
-    state = manager.write_project_state(tasks)
     worktrees, worktree_error = parse_git_worktree_list(manager.git.repo_root)
 
     rows: list[dict[str, Any]] = []
@@ -5874,40 +5899,46 @@ def cmd_rebaseline_project(args: argparse.Namespace) -> int:
     merged_prs = recent_merged_prs(manager, limit=args.pr_limit)
 
     archived_results: list[dict[str, Any]] = []
-    if args.confirm_archive_stale and stale_records:
-        stale_ids = {record["taskId"] for record in stale_records}
-        for task in list(payload.get("tasks", [])):
-            if task.get("taskId") in stale_ids:
-                archived_results.append(
-                    archive_task(
-                        manager,
-                        payload,
-                        task,
-                        event="rebaseline-archive-stale",
-                        started_at=started_at,
-                    )
-                )
-        payload = manager.load_active_tasks()
-        tasks = payload.get("tasks", [])
-
     hub_task = task_by_id(manager, payload, slugify(args.hub_task_id))
     hub_handoff_path = ""
     hub_updated = False
-    if args.update_current_hub_task:
-        hub_args = rebaseline_hub_args(manager, args, payload, len(archived_before), len(stale_records))
-        hub_task = manager.upsert_task(
-            payload,
-            hub_task,
-            hub_args,
-            route=route_result(
-                "confirmed",
-                routingNeedsReview=False,
-                routingEvidence=["project baseline explicitly refreshed by rebaseline-project"],
-            ),
-        )
-        hub_handoff_path = write_rebaseline_handoff(manager, hub_task, hub_args, language)
-        manager.save_active_tasks(payload)
-        hub_updated = True
+    if args.confirm_archive_stale or args.update_current_hub_task:
+        with manager.active_tasks_transaction() as payload:
+            tasks = payload.get("tasks", [])
+            active_before_count = len(tasks)
+            stale_records = stale_historical_sidecar_records(manager, tasks, args.hub_task_id)
+            if args.confirm_archive_stale and stale_records:
+                stale_ids = {record["taskId"] for record in stale_records}
+                for task in list(payload.get("tasks", [])):
+                    if task.get("taskId") in stale_ids:
+                        archived_results.append(
+                            archive_task(
+                                manager,
+                                payload,
+                                task,
+                                event="rebaseline-archive-stale",
+                                started_at=started_at,
+                            )
+                        )
+                payload = manager.load_active_tasks()
+                tasks = payload.get("tasks", [])
+
+            hub_task = task_by_id(manager, payload, slugify(args.hub_task_id))
+            if args.update_current_hub_task:
+                hub_args = rebaseline_hub_args(manager, args, payload, len(archived_before), len(stale_records))
+                hub_task = manager.upsert_task(
+                    payload,
+                    hub_task,
+                    hub_args,
+                    route=route_result(
+                        "confirmed",
+                        routingNeedsReview=False,
+                        routingEvidence=["project baseline explicitly refreshed by rebaseline-project"],
+                    ),
+                )
+                hub_handoff_path = write_rebaseline_handoff(manager, hub_task, hub_args, language)
+                manager.save_active_tasks(payload)
+                hub_updated = True
 
     recommendations = []
     if stale_records and not args.confirm_archive_stale:
@@ -5985,41 +6016,42 @@ def cmd_rebaseline_project(args: argparse.Namespace) -> int:
 def cmd_hygiene_dogfood(args: argparse.Namespace) -> int:
     started_at = time.perf_counter()
     manager = make_manager(args)
-    payload = manager.load_active_tasks()
-    candidates, non_recommended = dogfood_hygiene_records(manager, payload)
     archived: list[dict[str, Any]] = []
     sidecar_mutated = False
 
     if args.confirm_archive:
         if not args.task_id:
             raise SystemExit("--confirm-archive requires --task-id")
-        task_id = slugify(args.task_id)
-        task = task_by_id(manager, payload, task_id)
-        if task is None:
-            raise SystemExit(f"task not found for hygiene archive: {task_id}")
-        record = dogfood_hygiene_candidate_record(manager, task)
-        if not record.get("isCandidate"):
-            raise SystemExit(
-                f"task {task_id} is not an eligible stale dogfood/smoke record; run hygiene-dogfood without --confirm-archive first"
+        with manager.active_tasks_transaction() as payload:
+            task_id = slugify(args.task_id)
+            task = task_by_id(manager, payload, task_id)
+            if task is None:
+                raise SystemExit(f"task not found for hygiene archive: {task_id}")
+            record = dogfood_hygiene_candidate_record(manager, task)
+            if not record.get("isCandidate"):
+                raise SystemExit(
+                    f"task {task_id} is not an eligible stale dogfood/smoke record; run hygiene-dogfood without --confirm-archive first"
+                )
+            task["hygieneArchiveReason"] = DOGFOOD_HYGIENE_ARCHIVE_REASON
+            task["hygieneArchivedBy"] = "hygiene-dogfood"
+            task["hygieneEvidence"] = record.get("evidence", [])
+            task["hygieneArchivedAt"] = now_iso()
+            archive_result = archive_task(
+                manager,
+                payload,
+                task,
+                event="hygiene-dogfood-archive",
+                started_at=started_at,
             )
-        task["hygieneArchiveReason"] = DOGFOOD_HYGIENE_ARCHIVE_REASON
-        task["hygieneArchivedBy"] = "hygiene-dogfood"
-        task["hygieneEvidence"] = record.get("evidence", [])
-        task["hygieneArchivedAt"] = now_iso()
-        archive_result = archive_task(
-            manager,
-            payload,
-            task,
-            event="hygiene-dogfood-archive",
-            started_at=started_at,
-        )
-        archive_result["reason"] = DOGFOOD_HYGIENE_ARCHIVE_REASON
-        archive_result["evidence"] = record.get("evidence", [])
-        archived.append(archive_result)
-        sidecar_mutated = True
+            archive_result["reason"] = DOGFOOD_HYGIENE_ARCHIVE_REASON
+            archive_result["evidence"] = record.get("evidence", [])
+            archived.append(archive_result)
+            sidecar_mutated = True
+            payload = manager.load_active_tasks()
+            candidates, non_recommended = dogfood_hygiene_records(manager, payload)
+    else:
         payload = manager.load_active_tasks()
         candidates, non_recommended = dogfood_hygiene_records(manager, payload)
-    else:
         manager.log_event(
             "hygiene-dogfood",
             started_at=started_at,
@@ -6056,27 +6088,27 @@ def cmd_handoff(args: argparse.Namespace) -> int:
         print(json.dumps(guarded_non_git_write_response(manager, "handoff"), ensure_ascii=False, indent=2))
         return 0
     language = resolve_language(args, manager)
-    payload = manager.load_active_tasks()
-    route = route_guard_for_write(manager, payload, args, "handoff")
-    if route.get("routeStatus") in {"mismatch", "ambiguous"}:
-        print(json.dumps({"projectId": manager.project_id, "action": "handoff", **route}, ensure_ascii=False, indent=2))
-        return 0
-    task = task_by_id(manager, payload, slugify(args.task_id)) if getattr(args, "task_id", None) else None
-    if task is None:
-        task, _ = manager.find_task(payload)
-    sidecar_hit = task is not None
-    task = manager.upsert_task(payload, task, args, route=route)
+    with manager.active_tasks_transaction() as payload:
+        route = route_guard_for_write(manager, payload, args, "handoff")
+        if route.get("routeStatus") in {"mismatch", "ambiguous"}:
+            print(json.dumps({"projectId": manager.project_id, "action": "handoff", **route}, ensure_ascii=False, indent=2))
+            return 0
+        task = task_by_id(manager, payload, slugify(args.task_id)) if getattr(args, "task_id", None) else None
+        if task is None:
+            task, _ = manager.find_task(payload)
+        sidecar_hit = task is not None
+        task = manager.upsert_task(payload, task, args, route=route)
 
-    handoff_path = manager.handoff_path_for(task)
-    continue_phrase = generate_continue_phrase(task, language, getattr(args, "continue_phrase", "") or "")
-    compact_receipt = build_compact_receipt(task, args, continue_phrase, handoff_path, language)
-    task["continuePhrase"] = continue_phrase
-    task["compactReceipt"] = compact_receipt
-    task["receiptUpdatedAt"] = now_iso()
-    handoff_content = build_handoff_markdown(task, args, manager, language)
-    with file_lock(handoff_path):
-        atomic_write_text(handoff_path, handoff_content)
-    manager.save_active_tasks(payload)
+        handoff_path = manager.handoff_path_for(task)
+        continue_phrase = generate_continue_phrase(task, language, getattr(args, "continue_phrase", "") or "")
+        compact_receipt = build_compact_receipt(task, args, continue_phrase, handoff_path, language)
+        task["continuePhrase"] = continue_phrase
+        task["compactReceipt"] = compact_receipt
+        task["receiptUpdatedAt"] = now_iso()
+        handoff_content = build_handoff_markdown(task, args, manager, language)
+        with file_lock(handoff_path):
+            atomic_write_text(handoff_path, handoff_content)
+        manager.save_active_tasks(payload)
 
     manager.log_event(
         "handoff",
@@ -6204,12 +6236,12 @@ def cmd_load_handoff(args: argparse.Namespace) -> int:
 def cmd_archive(args: argparse.Namespace) -> int:
     started_at = time.perf_counter()
     manager = make_manager(args)
-    payload = manager.load_active_tasks()
-    task, _ = manager.find_task(payload)
-    if task is None:
-        raise SystemExit("no matching task to archive")
+    with manager.active_tasks_transaction() as payload:
+        task, _ = manager.find_task(payload)
+        if task is None:
+            raise SystemExit("no matching task to archive")
 
-    result = archive_task(manager, payload, task, event="archive", started_at=started_at)
+        result = archive_task(manager, payload, task, event="archive", started_at=started_at)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
@@ -6217,27 +6249,37 @@ def cmd_archive(args: argparse.Namespace) -> int:
 def cmd_finish_feature(args: argparse.Namespace) -> int:
     started_at = time.perf_counter()
     manager = make_manager(args)
-    payload = manager.load_active_tasks()
-    task, _ = manager.find_task(payload)
-    if task is None:
+    initial_payload = manager.load_active_tasks()
+    initial_task, _ = manager.find_task(initial_payload)
+    if initial_task is None:
         raise SystemExit("no matching task to finish")
 
+    task_for_pr = dict(initial_task)
     if args.pr_url:
-        task["prUrl"] = args.pr_url
-    task["status"] = "review"
-    task["updatedAt"] = now_iso()
-    pr_result = try_create_pr(task, manager, args)
-    if pr_result.get("prUrl"):
-        task["prUrl"] = pr_result["prUrl"]
+        task_for_pr["prUrl"] = args.pr_url
+    task_for_pr["status"] = "review"
+    task_for_pr["updatedAt"] = now_iso()
+    pr_result = try_create_pr(task_for_pr, manager, args)
 
-    result = archive_task(
-        manager,
-        payload,
-        task,
-        event="finish",
-        started_at=started_at,
-        pr_result=pr_result,
-    )
+    with manager.active_tasks_transaction() as payload:
+        task = task_by_id(manager, payload, initial_task.get("taskId", ""))
+        if task is None:
+            raise SystemExit("task was removed before finish could commit")
+        if args.pr_url:
+            task["prUrl"] = args.pr_url
+        task["status"] = "review"
+        task["updatedAt"] = now_iso()
+        if pr_result.get("prUrl"):
+            task["prUrl"] = pr_result["prUrl"]
+
+        result = archive_task(
+            manager,
+            payload,
+            task,
+            event="finish",
+            started_at=started_at,
+            pr_result=pr_result,
+        )
     result["pr"] = pr_result
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
@@ -6246,8 +6288,7 @@ def cmd_finish_feature(args: argparse.Namespace) -> int:
 def cmd_project_status(args: argparse.Namespace) -> int:
     started_at = time.perf_counter()
     manager = make_manager(args)
-    payload = manager.load_active_tasks()
-    state = manager.write_project_state(payload.get("tasks", []))
+    _, state = manager.load_active_tasks_with_project_state()
     output = {
         "projectId": manager.project_id,
         "sidecarRoot": str(manager.sidecar_root),
@@ -6269,8 +6310,7 @@ def cmd_weekly_report(args: argparse.Namespace) -> int:
     started_at = time.perf_counter()
     manager = make_manager(args)
     language = resolve_language(args, manager)
-    payload = manager.load_active_tasks()
-    state = manager.write_project_state(payload.get("tasks", []))
+    _, state = manager.load_active_tasks_with_project_state()
     period = safe_filename_label(args.period or default_weekly_period(), "weekly-report")
     report_name = f"{period}-{manager.project_id}.md"
     report_path = manager.reports_dir / report_name
