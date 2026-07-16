@@ -36,9 +36,12 @@ LOAD_HANDOFF_SECTIONS = {
     "not-done",
     "blocker",
     "touched-areas",
+    "changed-files",
     "key-files",
     "next-step",
     "validation",
+    "freshness",
+    "rollback-notes",
     "risks",
     "thread-summary",
 }
@@ -179,6 +182,7 @@ JSON_READ_RETRY_SECONDS = 0.05
 FILE_LOCK_TIMEOUT_SECONDS = 10
 FILE_LOCK_POLL_SECONDS = 0.05
 SUPPORTED_LANGUAGES = {"en", "zh-CN"}
+HANDOFF_CONTRACT_VERSION = "generic-structured-v1"
 
 
 TEXT = {
@@ -188,6 +192,7 @@ TEXT = {
         "not_recorded": "not recorded",
         "not_run": "not run",
         "handoff": "Handoff",
+        "handoff_version": "Handoff Version",
         "meta": "Meta",
         "goal": "Goal",
         "goal_not_recorded": "Goal not recorded.",
@@ -209,7 +214,9 @@ TEXT = {
         "not_done": "Not Done",
         "blocker": "Blocker",
         "touched_areas": "Touched Areas",
+        "changed_files": "Changed Files",
         "key_files": "Key Files",
+        "rollback_notes": "Rollback Notes",
         "suggested_next_step": "Suggested Next Step",
         "next_step_missing": "Next step not recorded.",
         "validation_status": "Validation Status",
@@ -227,6 +234,11 @@ TEXT = {
         "stale_warning_text": "verify before trusting this handoff.",
         "stale_warning_none": "none",
         "stale_reasons": "Stale Reasons",
+        "freshness_status": "Freshness Status",
+        "recorded_head_sha": "Recorded Head SHA",
+        "current_head_sha": "Current Head SHA",
+        "recorded_dirty_fingerprint": "Recorded Dirty Fingerprint",
+        "current_dirty_fingerprint": "Current Dirty Fingerprint",
         "validation": "Validation",
         "last_validation_at": "Last validation at",
         "command": "Command",
@@ -320,6 +332,7 @@ TEXT = {
         "not_recorded": "未记录",
         "not_run": "未运行",
         "handoff": "交接",
+        "handoff_version": "交接版本",
         "meta": "元信息",
         "goal": "目标",
         "goal_not_recorded": "未记录目标。",
@@ -341,7 +354,9 @@ TEXT = {
         "not_done": "未完成",
         "blocker": "阻塞",
         "touched_areas": "触达区域",
+        "changed_files": "变更文件",
         "key_files": "关键文件",
+        "rollback_notes": "回滚备注",
         "suggested_next_step": "建议下一步",
         "next_step_missing": "未记录下一步。",
         "validation_status": "验证状态",
@@ -359,6 +374,11 @@ TEXT = {
         "stale_warning_text": "信任此交接前请先核验当前状态。",
         "stale_warning_none": "无",
         "stale_reasons": "过期原因",
+        "freshness_status": "新鲜度状态",
+        "recorded_head_sha": "记录的 HEAD SHA",
+        "current_head_sha": "当前 HEAD SHA",
+        "recorded_dirty_fingerprint": "记录的未提交变更指纹",
+        "current_dirty_fingerprint": "当前未提交变更指纹",
         "validation": "验证",
         "last_validation_at": "最近验证时间",
         "command": "命令",
@@ -573,6 +593,7 @@ def compact_task(task: dict[str, Any]) -> dict[str, Any]:
     pr_url, pr_search_url = normalized_pr_fields(task.get("prUrl", ""), task.get("prSearchUrl", ""))
     return {
         "taskId": task.get("taskId", ""),
+        "handoffVersion": task.get("handoffVersion", ""),
         "status": task.get("status", "active"),
         "parentTaskId": task.get("parentTaskId", ""),
         "phase": task.get("phase", ""),
@@ -595,12 +616,15 @@ def compact_task(task: dict[str, Any]) -> dict[str, Any]:
         "prUrl": pr_url,
         "prSearchUrl": pr_search_url,
         "touchedAreas": task.get("touchedAreas", []),
+        "changedFiles": task.get("changedFiles", []),
+        "rollbackNotes": task.get("rollbackNotes", []),
         "nextStep": task.get("nextStep", ""),
         "blocker": task.get("blocker", ""),
         "headSha": task.get("headSha", ""),
         "upstream": task.get("upstream", ""),
         "dirtyFiles": task.get("dirtyFiles", []),
         "dirtyFingerprint": task.get("dirtyFingerprint", ""),
+        "freshnessStatus": task.get("freshnessStatus", {}),
         "validation": task.get("validation", {}),
         "safetyRules": task.get("safetyRules", []),
         "updatedAt": task.get("updatedAt", ""),
@@ -1840,6 +1864,7 @@ class SidecarManager:
             task.setdefault("routingEvidence", [])
             task.setdefault("routingNeedsReview", False)
             task.setdefault("routingCandidates", [])
+        task.setdefault("handoffVersion", HANDOFF_CONTRACT_VERSION)
         if getattr(args, "goal", None) is not None:
             task["goal"] = short_text(args.goal)
         if getattr(args, "next_step", None) is not None:
@@ -1862,6 +1887,24 @@ class SidecarManager:
             )
         elif not task.get("touchedAreas"):
             task["touchedAreas"] = self.default_touched_areas()
+
+        changed_files = getattr(args, "changed_files", None)
+        if changed_files:
+            task["changedFiles"] = unique_normalized_nonempty(
+                [short_text(path, max_len=240) for path in changed_files],
+                limit=30,
+            )
+        elif not task.get("changedFiles"):
+            task["changedFiles"] = unique_normalized_nonempty(
+                [short_text(path, max_len=240) for path in self.git.touched_files],
+                limit=30,
+            )
+
+        rollback_notes = normalized_note_list(getattr(args, "rollback_notes", None), limit=10, max_len=320)
+        if rollback_notes:
+            task["rollbackNotes"] = unique_normalized_nonempty([*task.get("rollbackNotes", []), *rollback_notes], limit=20)
+        else:
+            task.setdefault("rollbackNotes", [])
 
         aliases = normalized_note_list(getattr(args, "aliases", None), limit=20, max_len=80)
         if aliases:
@@ -1907,6 +1950,7 @@ class SidecarManager:
             task.setdefault("upstream", "")
             task.setdefault("dirtyFiles", [])
             task.setdefault("dirtyFingerprint", "")
+        task["freshnessStatus"] = stale_detection(task, self.git)
         task["updatedAt"] = now_iso()
         task.pop("_isNewTask", None)
         return task
@@ -1947,7 +1991,8 @@ def build_handoff_markdown(task: dict[str, Any], args: argparse.Namespace, manag
     done_items = [item.strip() for item in (args.done or []) if item.strip()][:5]
     not_done_items = [item.strip() for item in (args.not_done or []) if item.strip()][:5]
     risk_items = [item.strip() for item in (args.risks or []) if item.strip()]
-    key_files = [item.strip() for item in (args.key_files or manager.git.touched_files[:8]) if item.strip()]
+    changed_files = [item.strip() for item in (task.get("changedFiles") or manager.git.touched_files[:12]) if item.strip()]
+    key_files = [item.strip() for item in (args.key_files or changed_files[:8] or manager.git.touched_files[:8]) if item.strip()]
     touched_areas = task.get("touchedAreas") or manager.default_touched_areas()
     pr_url, pr_search_url = normalized_pr_fields(
         task.get("prUrl") or manager.git.pr_url,
@@ -1964,11 +2009,14 @@ def build_handoff_markdown(task: dict[str, Any], args: argparse.Namespace, manag
     inferences = task.get("inferences") or []
     unknowns = task.get("unknowns") or []
     safety_rules = task.get("safetyRules") or []
+    rollback_notes = task.get("rollbackNotes") or []
+    freshness = task.get("freshnessStatus") or stale_detection(task, manager.git)
 
     lines = [
         f"# {tr(language, 'handoff')}: {task['taskId']}",
         "",
         f"## {tr(language, 'meta')}",
+        f"- {tr(language, 'handoff_version')}: {task.get('handoffVersion') or HANDOFF_CONTRACT_VERSION}",
         f"- {tr(language, 'goal')}: {task.get('goal') or tr(language, 'goal_not_recorded')}",
         f"- {tr(language, 'status')}: {task.get('status') or 'active'}",
         f"- Parent Task: {task.get('parentTaskId') or tr(language, 'none')}",
@@ -2012,6 +2060,8 @@ def build_handoff_markdown(task: dict[str, Any], args: argparse.Namespace, manag
     lines.extend([f"- {item}" for item in not_done_items] or [f"- {tr(language, 'none')}"])
     lines.extend(["", f"## {tr(language, 'blocker')}", f"- {task.get('blocker') or tr(language, 'none')}", "", f"## {tr(language, 'touched_areas')}"])
     lines.extend([f"- {item}" for item in touched_areas] or [f"- {tr(language, 'none')}"])
+    lines.extend(["", f"## {tr(language, 'changed_files')}"])
+    lines.extend([f"- {item}" for item in changed_files] or [f"- {tr(language, 'none')}"])
     lines.extend(["", f"## {tr(language, 'key_files')}"])
     lines.extend([f"- {item}" for item in key_files] or [f"- {tr(language, 'none')}"])
     lines.extend(["", f"## {tr(language, 'suggested_next_step')}", f"- {task.get('nextStep') or tr(language, 'next_step_missing')}"])
@@ -2029,6 +2079,26 @@ def build_handoff_markdown(task: dict[str, Any], args: argparse.Namespace, manag
     lines.extend(
         [
             f"- {tr(language, 'notes')}: {validation_notes or tr(language, 'none')}",
+            "",
+            f"## {tr(language, 'freshness_status')}",
+            f"- {tr(language, 'stale')}: {bool_label(bool(freshness.get('isStale')))}",
+            f"- {tr(language, 'recorded_head_sha')}: {freshness.get('recordedHeadSha') or tr(language, 'not_recorded')}",
+            f"- {tr(language, 'current_head_sha')}: {freshness.get('currentHeadSha') or tr(language, 'not_recorded')}",
+            f"- {tr(language, 'recorded_dirty_fingerprint')}: {freshness.get('recordedDirtyFingerprint') or tr(language, 'not_recorded')}",
+            f"- {tr(language, 'current_dirty_fingerprint')}: {freshness.get('currentDirtyFingerprint') or tr(language, 'not_recorded')}",
+            f"- {tr(language, 'stale_reasons')}:",
+        ]
+    )
+    lines.extend([f"  - {item}" for item in freshness.get("reasons", [])] or [f"  - {tr(language, 'none')}"])
+    lines.extend(
+        [
+            "",
+            f"## {tr(language, 'rollback_notes')}",
+        ]
+    )
+    lines.extend([f"- {item}" for item in rollback_notes] or [f"- {tr(language, 'none')}"])
+    lines.extend(
+        [
             "",
             f"## {tr(language, 'risks')}",
         ]
@@ -2050,9 +2120,12 @@ SECTION_ALIASES = {
     "not-done": ["not done"],
     "blocker": ["blocker"],
     "touched-areas": ["touched areas"],
+    "changed-files": ["changed files"],
     "key-files": ["key files"],
     "next-step": ["suggested next step"],
     "validation": ["validation status", "validation"],
+    "freshness": ["freshness status"],
+    "rollback-notes": ["rollback notes"],
     "risks": ["risks"],
     "thread-summary": ["thread summary"],
 }
@@ -3179,8 +3252,7 @@ def build_visual_project_payload(manager: SidecarManager, include_archive: bool,
         raw_path = str(task.get("worktreePath") or "")
         resolved = str(Path(raw_path).resolve()) if raw_path else ""
         has_worktree = bool(raw_path and resolved in worktree_paths)
-        missing_recorded_worktree = bool(raw_path and not has_worktree)
-        if missing_recorded_worktree:
+        if not has_worktree:
             active_without_worktree.append(
                 {
                     "taskId": task.get("taskId", ""),
@@ -3197,7 +3269,7 @@ def build_visual_project_payload(manager: SidecarManager, include_archive: bool,
         if has_worktree:
             row["recommendedAction"] = ""
             row["recommendedActionType"] = ""
-        elif missing_recorded_worktree:
+        else:
             row["recommendedAction"] = "active task points to a missing worktree"
             row["recommendedActionType"] = "cleanup-or-recover-missing-worktree"
             row["health"] = "blocked" if row.get("taskStatus") == "blocked" or not row.get("handoffAvailable") else "attention"
@@ -3267,40 +3339,49 @@ def build_visual_project_payload(manager: SidecarManager, include_archive: bool,
                 archived_rows.append(base_visual_row_from_task(task, archived=True))
         task_rows.extend(archived_rows)
 
-    nodes: list[dict[str, Any]] = []
+    project_node = {
+        "id": visual_node_id("project", manager.project_id),
+        "type": "project",
+        "label": manager.project_id,
+        "health": "healthy",
+        "details": {
+            "sidecarRoot": str(manager.sidecar_root),
+            "canonicalRepoRoot": str(manager.git.repo_root),
+            "baseBranch": manager.git.base_branch,
+            "threadRole": "hub",
+        },
+    }
+    nodes: list[dict[str, Any]] = [project_node]
     edges: list[dict[str, str]] = []
-    seen_nodes: set[str] = set()
+    seen_nodes = {project_node["id"]}
     for row in task_rows:
         task_key = row.get("taskId") or row.get("branch") or row.get("worktreePath") or "unknown"
         task_id = visual_node_id("task", str(task_key))
         parent_task_key = str(row.get("parentTaskId") or "").strip()
         parent_task_id = visual_node_id("task", parent_task_key) if parent_task_key else ""
         worktree_path = str(row.get("worktreePath") or "")
-        worktree_label = Path(worktree_path).name if worktree_path else ""
-        worktree_id = visual_node_id("worktree", worktree_path) if worktree_path else ""
+        worktree_label = Path(worktree_path).name if worktree_path else "missing worktree"
+        worktree_id = visual_node_id("worktree", worktree_path or str(task_key))
         role = str(row.get("threadRole") or "primary-execution")
         role_label = str(row.get("threadDisplayLabel") or row.get("threadLabel") or role)
-        role_id = visual_node_id("thread", f"{task_key}:{role_label}")
+        role_id = visual_node_id("role", f"{task_key}:{role}")
         node_specs = [
             {"id": task_id, "type": "task", "label": short_text(str(task_key), max_len=40), "health": row.get("health", "attention"), "details": row},
             {
+                "id": worktree_id,
+                "type": "worktree",
+                "label": short_text(worktree_label, max_len=40),
+                "health": row.get("health", "attention"),
+                "details": {"worktreePath": worktree_path, "branch": row.get("branch", ""), "dirty": row.get("dirty", False), "stale": row.get("stale", False)},
+            },
+            {
                 "id": role_id,
-                "type": "thread",
+                "type": "threadRole",
                 "label": role_label,
                 "health": row.get("health", "attention"),
                 "details": {"taskId": task_key, "threadRole": role, "threadLabel": row.get("threadLabel", ""), "displayLabel": role_label},
             },
         ]
-        if worktree_path:
-            node_specs.append(
-                {
-                    "id": worktree_id,
-                    "type": "worktree",
-                    "label": short_text(worktree_label, max_len=40),
-                    "health": row.get("health", "attention"),
-                    "details": {"worktreePath": worktree_path, "branch": row.get("branch", ""), "dirty": row.get("dirty", False), "stale": row.get("stale", False)},
-                }
-            )
         if parent_task_key:
             parent_details = {"taskId": parent_task_key, "childrenInView": [task_key], "type": "parentTask"}
             node_specs.insert(
@@ -3318,10 +3399,16 @@ def build_visual_project_payload(manager: SidecarManager, include_archive: bool,
                 nodes.append(spec)
                 seen_nodes.add(spec["id"])
         if parent_task_key:
+            edges.append({"from": project_node["id"], "to": parent_task_id, "label": "has task"})
             edges.append({"from": parent_task_id, "to": task_id, "label": "child task"})
-        edges.append({"from": task_id, "to": role_id, "label": "owned by"})
-        if worktree_path:
-            edges.append({"from": role_id, "to": worktree_id, "label": "uses"})
+        else:
+            edges.append({"from": project_node["id"], "to": task_id, "label": "has task"})
+        edges.extend(
+            [
+                {"from": task_id, "to": worktree_id, "label": "uses"},
+                {"from": worktree_id, "to": role_id, "label": "owned by"},
+            ]
+        )
 
     needs_attention = []
     for row in task_rows:
@@ -3385,14 +3472,6 @@ def build_visual_project_payload(manager: SidecarManager, include_archive: bool,
         "sidecarRoot": str(manager.sidecar_root),
         "canonicalRepoRoot": str(manager.git.repo_root),
         "baseBranch": manager.git.base_branch,
-        "projectContext": {
-            "id": visual_node_id("project", manager.project_id),
-            "label": manager.project_id,
-            "sidecarRoot": str(manager.sidecar_root),
-            "canonicalRepoRoot": str(manager.git.repo_root),
-            "baseBranch": manager.git.base_branch,
-            "threadRole": "hub",
-        },
         "summaryCounts": summary_counts,
         "nodes": nodes,
         "edges": edges,
@@ -3420,7 +3499,6 @@ def build_visual_project_markdown(report: dict[str, Any]) -> str:
         f"- {visual_text(language, 'generated_at')}: {report['generatedAt']}",
         f"- {visual_text(language, 'sidecar')}: {report['sidecarRoot']}",
         f"- {visual_text(language, 'canonical_repo')}: {report['canonicalRepoRoot']}",
-        "- Project is context; the main graph is Task -> Thread -> Worktree(optional).",
         "",
         f"## {visual_text(language, 'project_graph')}",
         "",
@@ -3466,7 +3544,7 @@ def build_visual_project_markdown(report: dict[str, Any]) -> str:
                     markdown_cell(row.get("taskId") or row.get("branch") or "unknown"),
                     markdown_cell(row.get("parentTaskId", "")),
                     markdown_cell(row.get("phase", "")),
-                    markdown_cell(Path(str(row.get("worktreePath") or "")).name or "project-level / none"),
+                    markdown_cell(Path(str(row.get("worktreePath") or "")).name or visual_text(language, "missing")),
                     markdown_cell(row.get("threadRole", "")),
                     markdown_cell(row.get("threadLabel", "")),
                     markdown_cell(row.get("continuePhrase", "")),
@@ -6359,7 +6437,6 @@ def cmd_visualize_project(args: argparse.Namespace) -> int:
         "json": str(json_path),
         "html": str(html_path),
     }
-    report["dashboardPath"] = str(html_path)
     with file_lock(json_path):
         atomic_write_text(json_path, json.dumps(report, ensure_ascii=False, indent=2) + "\n")
     with file_lock(markdown_path):
@@ -6382,7 +6459,6 @@ def cmd_visualize_project(args: argparse.Namespace) -> int:
         json.dumps(
             {
                 "projectId": manager.project_id,
-                "dashboardPath": report["dashboardPath"],
                 "reportPaths": report["reportPaths"],
                 "summaryCounts": report.get("summaryCounts", {}),
                 "needsAttentionCount": len(report.get("needsAttention", [])),
@@ -6590,6 +6666,8 @@ def build_parser() -> argparse.ArgumentParser:
         subparser.add_argument("--thread-summary")
         subparser.add_argument("--pr-url")
         subparser.add_argument("--touched-area", dest="touched_areas", action="append")
+        subparser.add_argument("--changed-file", dest="changed_files", action="append")
+        subparser.add_argument("--rollback-note", dest="rollback_notes", action="append")
         subparser.add_argument("--fact", dest="facts", action="append")
         subparser.add_argument("--inference", dest="inferences", action="append")
         subparser.add_argument("--unknown", dest="unknowns", action="append")

@@ -33,7 +33,7 @@ The sidecar stays local at:
 
 Do not write dynamic task state into tracked repo docs. Do not require MCP for this workflow.
 
-Use the sidecar as workflow state, not as a memory replacement. It records auditable task/worktree/handoff/validation/safety state; it should not store chat transcripts, long logs, or model reasoning.
+Use the sidecar as workflow state, not as a memory replacement. It records auditable task/worktree/handoff/validation/safety state, not chat transcripts, long logs, or model reasoning.
 
 For multi-worktree projects, keep one stable project identity. The CLI resolves projectId in this order: `--project-id`, `CONTEXT_HANDOFF_PROJECT_ID`, existing local sidecar `config.json`, Git remote/common-dir, then repo root name fallback. Use `--project-id` only when the inferred identity would be wrong. Use `--base-branch dev` when the feature base branch is not the inferred default; it persists in sidecar config.
 
@@ -56,39 +56,35 @@ Use $agent-workflow-hub to save a handoff in Chinese.
 
 ## Natural-Language Task Routing
 
-Use `resolve-task` and `resume-query` when the user names a task informally instead of naming the current worktree, for example "continue markerless clean" or "resume the onboarding fix".
+This compatibility entrypoint supports the same V2.8 routing actions as `$agent-workflow-hub`, but new prompts should prefer `$agent-workflow-hub`.
 
-- Prefer `resume-query --query "<user phrase>"` when the user clearly wants to continue work and you have any known project/worktree path.
+- Use `resume-query --query "<user phrase>"` when the user says "continue <nickname>" and you have any known project/worktree path.
 - Chinese/natural-language takeover phrases such as `接手 <task>`, `继续 <task>`, `恢复 <task>`, `你是 <task> 的执行进程`, and `作为 <task> execution thread` must route to `resume-query --query "<task>"` first.
 - If a prior handoff gave a phrase like `继续图像质量 research` or `continue image quality research`, use that whole phrase with `resume-query`; users should not need to remember `taskId` or `handoffPath`.
 - Use `resume-feature` only when the user explicitly says `当前 worktree`, `this worktree`, or otherwise clearly means the already-selected Git worktree.
-- Use `resolve-task --query "<user phrase>"` when you only need to route, inspect candidates, or decide which execution thread/worktree should receive the next prompt.
-- If `resolved: true`, continue from the returned `cd` / `worktreePath` and summarize the compact resume fields instead of pasting full JSON.
-- If `resolved: false`, ask the returned `disambiguationQuestion` as one short question. Do not guess between close candidates.
+- Use `resolve-task --query "<user phrase>"` when routing without resuming.
+- If `resolved: false`, ask the returned `disambiguationQuestion` once instead of guessing.
 - If the user says this thread is an execution, validation, review, dogfood, discussion, or explainer process for a named task, use `resume-query` first and then `attach-thread` when the sidecar needs a durable `threadRole`, `threadLabel`, `threadPurpose`, `parentTaskId`, or `phase`.
 - If handoff text or user instructions mention a branch, task id, or worktree path that differs from the current cwd, respect those hints. Do not write a handoff to the cwd task unless the route is explicitly confirmed. When the CLI returns `routingStatus: mismatch` or `ambiguous`, explain the route conflict and ask or rerun with the correct worktree/task.
 - Treat `routingStatus: inferred` and `routingNeedsReview: true` as visible audit state: mention it briefly and do not describe the relationship as user-confirmed.
-- `resume-query` is sidecar-first, git-aware, and scan-minimal.
 - `resume-feature` and `resume-query` restore recorded workflow state; they do not prove correctness or replace validation, PR review, or targeted investigation.
-- The resolver is deterministic and local: aliases, taskId, branch, worktree basename, goal, handoff summary, and touchedAreas are matched with normalized strings, token overlap, and `difflib`. It does not use LLMs, embeddings, vectors, UI, MCP, or thread APIs.
-- `continuePhrase` participates in matching below exact user aliases and above generated aliases.
-- `touchedAreas` and `touchedFiles` are evidence/locator signals, not a required first scan path.
+- Persist only user-confirmed aliases with `start-feature --alias`, `handoff --alias`, or `alias-task --alias`. `continuePhrase` also participates in matching below exact aliases and above generated aliases. Generated aliases participate in matching but are not written to task `aliases`.
+- The resolver is local and deterministic: normalized strings, token overlap, and `difflib`; no LLMs, embeddings, vectors, UI, MCP, or thread API.
 
 ## Handoff Loading
 
-Use `load-handoff` when a new thread needs saved sidecar/handoff context from an older thread. This is a continuation and audit tool; it does not replace the normal path where a discussion/research thread gives the user a complete execution prompt and plan to paste into a Primary Execution Thread.
+Use `load-handoff` when a new thread needs saved sidecar/handoff context from an older thread. Prefer `$agent-workflow-hub` wording in new prompts, but this compatibility entrypoint supports the same behavior.
 
 - For same-role continuation in a new thread, first run `resume-query --query "<continue phrase or task>"`, then run `load-handoff --query "<same phrase>" --mode compact`.
-- Compact mode is the default. It should return the short receipt, next step, risks/blockers, and continue phrase without pasting full Markdown.
+- Compact mode is the default and should return a short receipt, next step, risks/blockers, and continue phrase without pasting full Markdown.
 - Use `--mode section --section validation --reason validation-needed` for validation threads.
-- Use `--mode section --section risks`, `--section thread-summary`, `--section facts`, or `--section next-step` for review/discussion follow-up when compact output is insufficient.
-- Use `--mode full` only when the user explicitly asks for the complete handoff, or when a compact/section load cannot answer a concrete continuation question.
-- If `load-handoff` returns ambiguous candidates, ask the returned disambiguation question once; do not guess.
-- If no handoff is available, say that the sidecar task exists but the Markdown handoff is missing, then use `resume-feature`, `audit-context`, or targeted investigation as appropriate.
+- Use section mode for review/discussion follow-up when only facts, risks, next step, validation, or thread summary are needed.
+- Use `--mode full` only when the user explicitly asks for the complete handoff, or when compact/section output is insufficient for a concrete continuation question.
+- If ambiguous, ask the returned disambiguation question once. If the handoff is missing, report the missing Markdown and use `resume-feature`, `audit-context`, or targeted investigation.
 - Hub threads should prefer `audit-project`, `project-status`, compact receipts, and recommended actions over full handoff loading.
-- `load-handoff` logs only short telemetry such as mode, section, reason, role, and content size. It must not log handoff content, long reasoning, diffs, or chat transcripts.
+- `load-handoff` logs telemetry about mode, section, reason, role, and content size, not handoff content or chat transcripts.
 
-When a discussion, research, or hub thread outputs an implementation plan, add one short user-facing recommendation without reading full handoffs just for that recommendation:
+When a discussion, research, or hub thread outputs an implementation plan, add one short recommendation:
 
 ```text
 Execution target recommendation: open a new Primary Execution Thread.
@@ -105,18 +101,6 @@ or:
 ```text
 Execution target recommendation: ask before choosing.
 ```
-
-Task aliases:
-
-- Pass `--alias` to `start-feature` or `handoff` when the user confirms a useful nickname.
-- Use `alias-task --alias "<alias>"` to add a nickname to an existing task, and `alias-task --remove-alias "<alias>"` to remove one.
-- Persist only user-confirmed aliases. Generated aliases participate in matching but are not written back to task `aliases`.
-
-Project/container routing:
-
-- `resume-query` may be called from a known worktree, canonical repo, or non-Git project container path.
-- If one known project matches the container, the CLI routes to that project's latest known worktree/canonical root.
-- If multiple projects match, ask the returned disambiguation question once.
 
 ## New Thread Self-Orientation
 
@@ -211,7 +195,7 @@ Primary Execution Thread Handoff:
 
 ```text
 Use $agent-workflow-hub first. If only $context-handoff is available, use it as the compatible entrypoint.
-You are the Primary Execution Thread for <project>/<task>. threadRole: primary-execution. Repo/worktree: <path>. Use resume-query first if the task may already exist; otherwise run resume-feature for this worktree if a task exists, or start-feature with this goal: <goal>. Plan briefly inside this thread, then implement when the user has asked for execution. Keep dynamic state in sidecar/handoffs, not tracked repo docs. Before stopping after meaningful work, run relevant validation, audit-context if useful, and save a handoff with facts, inferences, unknowns, safety rules, validation, blockers, risks, decisions, nextStep, and a useful --continue-phrase when the user gave one. Report back to the Project Hub with a compact receipt first: concise result, nextStep, risks/blockers, and "Next time say: ..."; then include optional machine details such as taskId, handoffPath, branch, worktree, validation, and PR/issue links.
+You are the Primary Execution Thread for <project>/<task>. threadRole: primary-execution. Repo/worktree: <path>. Use resume-query first if the task may already exist; otherwise run resume-feature for this worktree if a task exists, or start-feature with this goal: <goal>. Plan briefly inside this thread, then implement when the user has asked for execution. Keep dynamic state in sidecar/handoffs, not tracked repo docs. Before stopping after meaningful work, run relevant validation, audit-context if useful, and save a handoff with facts, inferences, unknowns, changed files, rollback notes when relevant, safety rules, validation, blockers, risks, decisions, nextStep, and a useful --continue-phrase when the user gave one. Report back to the Project Hub with a compact receipt first: concise result, nextStep, risks/blockers, and "Next time say: ..."; then include optional machine details such as taskId, handoffPath, branch, worktree, validation, and PR/issue links.
 ```
 
 Project Hub Thread Handoff:
@@ -237,7 +221,7 @@ You are a Dogfood/QA Thread for <project>. threadRole: dogfood. Feedback: <obser
 - `resolve-task`: Resolve a natural-language query to a sidecar task. Use when routing without resuming.
 - `resume-feature`: Recover compact task state, latest handoff availability, stable docs, git status, and next-step hints. Use when taking over or continuing a branch.
 - `resume-query`: Resolve a natural-language query and resume the matched worktree when confidence is high. Use when the user says "continue <nickname>".
-- `handoff`: Save incomplete work, next step, blockers, touched areas, facts, inferences, unknowns, validation commands/results/time, safety rules, concise thread summary, `continuePhrase`, and compact human-facing receipt.
+- `handoff`: Save incomplete work, next step, blockers, touched areas, changed files, rollback notes, facts, inferences, unknowns, validation commands/results/time, safety rules, freshness status, concise thread summary, `continuePhrase`, and compact human-facing receipt.
 - `load-handoff`: Load saved sidecar/handoff context by task id, natural-language query, or current worktree. Defaults to compact receipt; section/full loading requires explicit mode and is logged for audit.
 - `audit-context`: Check whether the current context is trustworthy before handoff/resume. It reports missing handoff, stale HEAD/dirty files, missing validation, missing safety rules, dirty worktree, and backfill prompts.
 - `audit-project`: Project hub inventory for all Git worktrees. It compares real `git worktree list` output with sidecar active tasks, audits every worktree, and reports untracked worktrees, stale tasks, missing validation/safety/handoff, recommended actions, execution-thread prompts, and cleanup prompts.
@@ -247,7 +231,7 @@ You are a Dogfood/QA Thread for <project>. threadRole: dogfood. Feedback: <obser
 - `project-status`: Return compact sidecar project state for planning. This is not the full Git worktree inventory.
 - `weekly-report`: Generate a human-facing Markdown report under the sidecar `reports/` directory and reply with a short notification, not the full report by default.
 - `eval-report`: Generate lightweight workflow evaluation Markdown and JSON reports under the sidecar `reports/` directory. It reports proxy workflow metrics, not exact token usage or proof of correctness.
-- `visualize-project`: Generate Markdown + Mermaid, companion JSON, and a static HTML Project Hub dashboard under the sidecar `reports/` directory. Use the HTML dashboard as the default human-facing entrypoint: reply with `dashboardPath` or `reportPaths.html` first, then the Markdown path when useful. Do not paste the full JSON, full HTML, or full Markdown by default, and do not auto-open the HTML. The HTML dashboard keeps Project as page context, shows Task -> Thread -> Worktree(optional), supports route spotlight, uses text health badges, hides archive by default, keeps dependencies plus `th-project-hub` outside the ownership graph, and displays canonical `threadRole` separately from `threadLabel`.
+- `visualize-project`: Generate Markdown + Mermaid, companion JSON, and a static HTML Project Hub dashboard under the sidecar `reports/` directory. Use for human-facing project map requests; do not paste the full JSON by default and do not auto-open the HTML. The HTML dashboard keeps Project as page context, shows Task -> Worktree -> Thread, supports route spotlight, uses text health badges, hides archive by default, keeps dependencies plus `th-project-hub` outside the ownership graph, and displays canonical `threadRole` separately from `threadLabel`.
 - `snapshot`: Print current worktree Git facts for lightweight backfill.
 - `draft-issue`: Generate a dogfood/debug issue draft with Facts, Inferences, Unknowns, Reproduction, Suggested Fix, and Priority. This never requires GitHub CLI.
 - `create-issue`: Create a dogfood/debug GitHub issue only when the user explicitly asks or dogfood issue mode is enabled, GitHub CLI is authenticated, content is safe, and no likely duplicate is found.
@@ -273,7 +257,7 @@ You are a Dogfood/QA Thread for <project>. threadRole: dogfood. Feedback: <obser
 - If the user says the project map is stale, the current project appears as an old version, many PRs were merged, or the sidecar baseline needs refresh, run `rebaseline-project` first. Do not archive stale tasks unless the user explicitly confirms; then use `--confirm-archive-stale`. Use `--update-current-hub-task` when the user wants the current hub baseline written.
 - If old dogfood/smoke blocker records, pre-reinstall failures, stale environment smoke tasks, or superseded dogfood findings pollute `audit-project` or `visualize-project`, run `hygiene-dogfood`. Treat it as a narrow dogfood smoke hygiene report; archive only one eligible stale record after explicit human confirmation with `--confirm-archive --task-id <id>`.
 - If the user asks whether Agent Workflow Hub is helping, asks for dogfood/evaluation metrics, or asks for a tool-effectiveness report, run `eval-report`. Keep it distinct from `weekly-report`, which is project progress reporting.
-- If the user says `visualize project`, `show project graph`, `可视化项目`, `显示项目图`, `项目关系图`, or `看一下项目全局`, run `visualize-project`. Reply with the HTML dashboard path first (`dashboardPath` or `reportPaths.html`), then the Markdown report path if useful; avoid pasting the full JSON, full HTML, or full Markdown unless asked.
+- If the user says `visualize project`, `show project graph`, `可视化项目`, `显示项目图`, `项目关系图`, or `看一下项目全局`, run `visualize-project`. Reply with the Mermaid graph, Legend, details table, and needs-attention summary from the generated Markdown; avoid pasting the full JSON unless asked.
 - If setup is uncertain, run `doctor` first. Explain any missing optional tools without installing them.
 
 ## Project Hub / Multi-Worktree Protocol
@@ -297,7 +281,7 @@ Never infer that sidecar active tasks are the full worktree inventory.
 
 Prefer old execution threads for backfill when they exist, because they may still have semantic context that Git cannot recover. If no old execution thread exists, use `newExecutionThreadPrompt` to open a new Primary Execution Thread. The new thread must recover or initialize sidecar state, distinguish facts/inferences/unknowns, add validation/safety/nextStep, save a handoff, and report back to the Project Hub. The prompt should not micromanage the agent's investigation path: the agent may use code reading, commits, PRs, issues, tests, or targeted search as needed.
 
-For project visualization requests, run `visualize-project` instead of asking the user to name Mermaid or workflow graph internals. Project is page/report context, not an ownership graph node. The graph should show the main chain `Task -> Thread -> Worktree(optional)`; state and health belong in badges/classes and the details table, not as default graph nodes.
+For project visualization requests, run `visualize-project` instead of asking the user to name Mermaid or workflow graph internals. The graph should show the main chain `Project -> Task -> Worktree -> Thread Role`; state and health belong in badges/classes and the details table, not as default graph nodes.
 
 Task hierarchy is intentionally lightweight. Use `parentTaskId` for ownership when a feature has follow-up, validation, or bugfix child tasks. Do not invent dependencies or multiple parents; if a relationship is merely related but not owned, describe it in facts/inferences or next steps instead.
 

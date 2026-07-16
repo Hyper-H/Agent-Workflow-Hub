@@ -12,7 +12,7 @@ Common actions:
 - `resolve-task`: route a natural-language task phrase.
 - `resume-feature`: resume the current worktree.
 - `resume-query`: route a natural-language query, then resume.
-- `handoff`: save task state, full handoff Markdown, compact receipt, and continue phrase.
+- `handoff`: save task state, full handoff Markdown, compact receipt, continue phrase, changed files, freshness status, validation evidence, safety rules, and rollback notes.
 - `load-handoff`: load compact, section, or explicit full handoff content.
 - `audit-context`: audit one worktree.
 - `audit-project`: audit project hub/worktree inventory.
