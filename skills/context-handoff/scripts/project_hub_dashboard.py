@@ -908,7 +908,7 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
       <div class="mark" aria-label="Agent Workflow Hub">AW</div>
       <button class="active" type="button" title="Project Hub">H</button>
       <button type="button" title="Tasks">T</button>
-      <button type="button" title="Worktrees">W</button>
+      <button type="button" title="Environments">E</button>
       <button type="button" title="Audit">A</button>
     </aside>
 
@@ -920,7 +920,7 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
           <p id="projectSubtitle" class="subtitle"></p>
         </div>
         <div class="toolbar">
-          <input id="search" class="search" type="search" placeholder="筛选 taskId / branch / worktreePath / thread role / status" aria-label="筛选项目关系">
+          <input id="search" class="search" type="search" placeholder="筛选 taskId / branch / environment / thread role / status" aria-label="筛选项目关系">
           <div class="mode-switch" aria-label="视图切换">
             <button id="mapMode" class="active" type="button">关系图</button>
             <button id="matrixMode" type="button">矩阵检查</button>
@@ -937,7 +937,7 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
             <div class="panel-head">
               <div>
                 <p class="eyebrow">Relationship Map</p>
-                <h2 id="mapTitle">Task -> Thread -> Worktree</h2>
+                <h2 id="mapTitle">Task -> Thread -> Environment</h2>
               </div>
               <span class="chip">Project 是页面上下文，dependency 不进入 ownership 图</span>
             </div>
@@ -955,7 +955,7 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
                     <div id="threadLane" class="node-stack"></div>
                   </div>
                   <div class="lane">
-                    <div class="lane-title"><span>Worktree</span><span id="worktreeCount"></span></div>
+                    <div class="lane-title"><span>Environment</span><span id="worktreeCount"></span></div>
                     <div id="worktreeLane" class="node-stack"></div>
                   </div>
                 </div>
@@ -1052,7 +1052,7 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
     }
 
     function rowThreadKey(row, index) {
-      return `${rowTaskKey(row, index)}:${rowThreadLabel(row)}`;
+      return row.threadId || `${rowTaskKey(row, index)}:${rowThreadLabel(row)}`;
     }
 
     function rowThreadLabel(row) {
@@ -1071,7 +1071,7 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
         const worktreeId = row.worktreePath || "";
         const taskKey = nodeKey("task", taskId);
         const threadKey = nodeKey("thread", threadId);
-        const worktreeKey = worktreeId ? nodeKey("worktree", worktreeId) : "";
+        const worktreeKey = worktreeId ? nodeKey("environment", worktreeId) : "";
 
         if (!taskMap.has(taskKey)) {
           taskMap.set(taskKey, {
@@ -1087,7 +1087,7 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
 
         if (worktreeKey && !worktreeMap.has(worktreeKey)) {
           worktreeMap.set(worktreeKey, {
-            type: "worktree",
+            type: "environment",
             key: worktreeKey,
             label: shortPath(row.worktreePath),
             health: row.health || "attention",
@@ -1177,13 +1177,13 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
         <article class="summary">
           <div>
             <h2>${escapeHtml(payload.projectId || "project")}</h2>
-            <p>Project 是页面上下文。主关系固定为 <strong>Task -> Thread -> Worktree(optional)</strong>；risk / nextStep / validation / handoff 只在详情和矩阵中呈现。</p>
+            <p>Project 是页面上下文。主关系固定为 <strong>Task -> Thread -> Environment(optional)</strong>；risk / nextStep / validation / handoff 只在详情和矩阵中呈现。</p>
           </div>
           <span class="status-pill ${statusClass(projectHealth)}">${escapeHtml(projectHealth)}</span>
         </article>
         <article class="metric"><span>Tasks</span><b>${summaryCounts.visibleTasks || graph.tasks.length}</b><span>${summaryCounts.blocked || 0} blocked</span></article>
-        <article class="metric"><span>Worktrees</span><b>${summaryCounts.gitWorktrees || graph.worktrees.length}</b><span>${summaryCounts.worktreeAuditErrors || 0} audit errors</span></article>
-        <article class="metric"><span>Threads</span><b>${graph.threads.length}</b><span>role surfaces</span></article>
+        <article class="metric"><span>Environments</span><b>${summaryCounts.visibleEnvironments || graph.worktrees.length}</b><span>${summaryCounts.worktreeAuditErrors || 0} worktree audit errors</span></article>
+        <article class="metric"><span>Threads</span><b>${summaryCounts.visibleThreads || graph.threads.length}</b><span>recorded thread surfaces</span></article>
         <article class="metric"><span>Archive</span><b>${archiveSummary.archivedHidden || 0}</b><span>hidden by default</span></article>
       `;
     }
@@ -1239,7 +1239,7 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
         const branches = unique(node.rows.map((row) => row.branch));
         return branches.join(" / ") || `${node.rows.length} route rows`;
       }
-      if (node.type === "worktree") {
+      if (node.type === "environment") {
         const path = node.rows[0]?.worktreePath || "";
         return path || "project-level / none";
       }
@@ -1249,7 +1249,7 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
 
     function chipsForNode(node) {
       if (node.type === "task") return `<span class="chip">taskId</span><span class="chip">branch</span>`;
-      if (node.type === "worktree") return `<span class="chip">worktreePath</span><span class="chip">dirty/stale</span>`;
+      if (node.type === "environment") return `<span class="chip">environment</span><span class="chip">dirty/stale</span>`;
       return `<span class="chip">thread role</span><span class="chip">routing</span>`;
     }
 
@@ -1300,7 +1300,7 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
             <span class="node-main"><b>${escapeHtml(node.label)}</b><span class="status-pill ${statusClass(healthForNode(node))}">${escapeHtml(healthForNode(node))}</span></span>
             <span>thread label: ${escapeHtml(threadLabels || "none")}</span>
             <span>thread role: ${escapeHtml(threads || "none")}</span>
-            <span>worktreePath: ${escapeHtml(worktrees || "project-level / none")}</span>
+            <span>environment: ${escapeHtml(worktrees || "project-level / none")}</span>
           </button>
         `;
       }).join("");
@@ -1335,7 +1335,7 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
             <tr>
               <th>taskId</th>
               ${threads.map((thread) => `<th>thread role<br>${escapeHtml(thread.label)}</th>`).join("")}
-              ${worktrees.map((worktree) => `<th>worktreePath<br>${escapeHtml(worktree.label)}</th>`).join("")}
+              ${worktrees.map((worktree) => `<th>environment<br>${escapeHtml(worktree.label)}</th>`).join("")}
             </tr>
           </thead>
           <tbody>${rowsHtml}</tbody>
@@ -1388,7 +1388,7 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
           <b>${escapeHtml(item.title)}</b>
           <span>${escapeHtml(item.body)}。这是 dependency / routing evidence，不是 ownership 边。</span>
         </button>
-      `).join("") : `<span class="chip">无辅助 dependency / routing action。主图仍只表达 Task -> Thread -> Worktree(optional)。</span>`;
+      `).join("") : `<span class="chip">无辅助 dependency / routing action。主图仍只表达 Task -> Thread -> Environment(optional)。</span>`;
       document.querySelectorAll(".secondary-item").forEach((item) => {
         item.addEventListener("click", () => {
           const prompt = item.dataset.prompt || "";
@@ -1463,7 +1463,7 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
         ${evidenceBlock("Machine Fields", fieldRows([
           ["taskId", unique(node.rows.map((row) => row.taskId)).join(" / ")],
           ["branch", branches.join(" / ")],
-          ["worktreePath", worktreePaths.join(" / ")],
+          ["environment", worktreePaths.join(" / ")],
           ["thread role", threadRoles.join(" / ")],
           ["thread label", threadLabels.join(" / ")],
           ["dirty/stale", `dirty=${boolText(dirty)}, stale=${boolText(stale)}`],
@@ -1484,10 +1484,10 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
     function buildPrompt(node) {
       const first = node.rows[0] || {};
       if (node.type === "task") {
-        return `Resume task ${first.taskId || node.label}. Check branches ${unique(node.rows.map((row) => row.branch)).join(", ") || "unknown"}, canonical thread roles ${unique(node.rows.map((row) => row.threadRole)).join(", ") || "none"}, and worktrees ${unique(node.rows.map((row) => row.worktreePath || "project-level / none")).join(", ")}. Preserve handoff, validation, and safetyRules before editing.`;
+        return `Resume task ${first.taskId || node.label}. Check branches ${unique(node.rows.map((row) => row.branch)).join(", ") || "unknown"}, canonical thread roles ${unique(node.rows.map((row) => row.threadRole)).join(", ") || "none"}, and environments ${unique(node.rows.map((row) => row.worktreePath || "project-level / none")).join(", ")}. Preserve handoff, validation, and safetyRules before editing.`;
       }
-      if (node.type === "worktree") {
-        return `Audit worktree ${first.worktreePath || node.label}. Check dirty=${Boolean(first.dirty)}, stale=${Boolean(first.stale)}, handoff, validation, safetyRules, nextStep, and blocker before resuming related tasks.`;
+      if (node.type === "environment") {
+        return `Audit environment ${first.worktreePath || node.label}. Check dirty=${Boolean(first.dirty)}, stale=${Boolean(first.stale)}, handoff, validation, safetyRules, nextStep, and blocker before resuming related tasks.`;
       }
       return `Resume canonical thread role ${first.threadRole || "primary-execution"}${first.threadLabel ? ` (${first.threadLabel})` : ""} for task ${first.taskId || "unknown"}. Report taskId, status, handoffPath, nextStep, blocker, validation, and risks back to th-project-hub.`;
     }
@@ -1495,7 +1495,7 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
     function renderActions() {
       const node = selectedNode();
       const prompt = node ? buildPrompt(node) : "Use audit-project for Agent Workflow Hub.";
-      const auditPrompt = "Use $agent-workflow-hub to run visualize-project / audit-project for this Project Hub. Keep Project as context; main graph remains Task -> Thread -> Worktree(optional); dependencies and th-project-hub stay secondary.";
+      const auditPrompt = "Use $agent-workflow-hub to run visualize-project / audit-project for this Project Hub. Keep Project as context; main graph remains Task -> Thread -> Environment(optional); dependencies and th-project-hub stay secondary.";
       document.getElementById("actionBody").innerHTML = `
         <div class="audit-entry">
           <span class="status-pill status-attention">audit / routing</span>
