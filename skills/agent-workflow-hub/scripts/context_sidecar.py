@@ -3179,7 +3179,8 @@ def build_visual_project_payload(manager: SidecarManager, include_archive: bool,
         raw_path = str(task.get("worktreePath") or "")
         resolved = str(Path(raw_path).resolve()) if raw_path else ""
         has_worktree = bool(raw_path and resolved in worktree_paths)
-        if not has_worktree:
+        missing_recorded_worktree = bool(raw_path and not has_worktree)
+        if missing_recorded_worktree:
             active_without_worktree.append(
                 {
                     "taskId": task.get("taskId", ""),
@@ -3196,7 +3197,7 @@ def build_visual_project_payload(manager: SidecarManager, include_archive: bool,
         if has_worktree:
             row["recommendedAction"] = ""
             row["recommendedActionType"] = ""
-        else:
+        elif missing_recorded_worktree:
             row["recommendedAction"] = "active task points to a missing worktree"
             row["recommendedActionType"] = "cleanup-or-recover-missing-worktree"
             row["health"] = "blocked" if row.get("taskStatus") == "blocked" or not row.get("handoffAvailable") else "attention"
@@ -3266,49 +3267,40 @@ def build_visual_project_payload(manager: SidecarManager, include_archive: bool,
                 archived_rows.append(base_visual_row_from_task(task, archived=True))
         task_rows.extend(archived_rows)
 
-    project_node = {
-        "id": visual_node_id("project", manager.project_id),
-        "type": "project",
-        "label": manager.project_id,
-        "health": "healthy",
-        "details": {
-            "sidecarRoot": str(manager.sidecar_root),
-            "canonicalRepoRoot": str(manager.git.repo_root),
-            "baseBranch": manager.git.base_branch,
-            "threadRole": "hub",
-        },
-    }
-    nodes: list[dict[str, Any]] = [project_node]
+    nodes: list[dict[str, Any]] = []
     edges: list[dict[str, str]] = []
-    seen_nodes = {project_node["id"]}
+    seen_nodes: set[str] = set()
     for row in task_rows:
         task_key = row.get("taskId") or row.get("branch") or row.get("worktreePath") or "unknown"
         task_id = visual_node_id("task", str(task_key))
         parent_task_key = str(row.get("parentTaskId") or "").strip()
         parent_task_id = visual_node_id("task", parent_task_key) if parent_task_key else ""
         worktree_path = str(row.get("worktreePath") or "")
-        worktree_label = Path(worktree_path).name if worktree_path else "missing worktree"
-        worktree_id = visual_node_id("worktree", worktree_path or str(task_key))
+        worktree_label = Path(worktree_path).name if worktree_path else ""
+        worktree_id = visual_node_id("worktree", worktree_path) if worktree_path else ""
         role = str(row.get("threadRole") or "primary-execution")
         role_label = str(row.get("threadDisplayLabel") or row.get("threadLabel") or role)
-        role_id = visual_node_id("role", f"{task_key}:{role}")
+        role_id = visual_node_id("thread", f"{task_key}:{role_label}")
         node_specs = [
             {"id": task_id, "type": "task", "label": short_text(str(task_key), max_len=40), "health": row.get("health", "attention"), "details": row},
             {
-                "id": worktree_id,
-                "type": "worktree",
-                "label": short_text(worktree_label, max_len=40),
-                "health": row.get("health", "attention"),
-                "details": {"worktreePath": worktree_path, "branch": row.get("branch", ""), "dirty": row.get("dirty", False), "stale": row.get("stale", False)},
-            },
-            {
                 "id": role_id,
-                "type": "threadRole",
+                "type": "thread",
                 "label": role_label,
                 "health": row.get("health", "attention"),
                 "details": {"taskId": task_key, "threadRole": role, "threadLabel": row.get("threadLabel", ""), "displayLabel": role_label},
             },
         ]
+        if worktree_path:
+            node_specs.append(
+                {
+                    "id": worktree_id,
+                    "type": "worktree",
+                    "label": short_text(worktree_label, max_len=40),
+                    "health": row.get("health", "attention"),
+                    "details": {"worktreePath": worktree_path, "branch": row.get("branch", ""), "dirty": row.get("dirty", False), "stale": row.get("stale", False)},
+                }
+            )
         if parent_task_key:
             parent_details = {"taskId": parent_task_key, "childrenInView": [task_key], "type": "parentTask"}
             node_specs.insert(
@@ -3326,16 +3318,10 @@ def build_visual_project_payload(manager: SidecarManager, include_archive: bool,
                 nodes.append(spec)
                 seen_nodes.add(spec["id"])
         if parent_task_key:
-            edges.append({"from": project_node["id"], "to": parent_task_id, "label": "has task"})
             edges.append({"from": parent_task_id, "to": task_id, "label": "child task"})
-        else:
-            edges.append({"from": project_node["id"], "to": task_id, "label": "has task"})
-        edges.extend(
-            [
-                {"from": task_id, "to": worktree_id, "label": "uses"},
-                {"from": worktree_id, "to": role_id, "label": "owned by"},
-            ]
-        )
+        edges.append({"from": task_id, "to": role_id, "label": "owned by"})
+        if worktree_path:
+            edges.append({"from": role_id, "to": worktree_id, "label": "uses"})
 
     needs_attention = []
     for row in task_rows:
@@ -3399,6 +3385,14 @@ def build_visual_project_payload(manager: SidecarManager, include_archive: bool,
         "sidecarRoot": str(manager.sidecar_root),
         "canonicalRepoRoot": str(manager.git.repo_root),
         "baseBranch": manager.git.base_branch,
+        "projectContext": {
+            "id": visual_node_id("project", manager.project_id),
+            "label": manager.project_id,
+            "sidecarRoot": str(manager.sidecar_root),
+            "canonicalRepoRoot": str(manager.git.repo_root),
+            "baseBranch": manager.git.base_branch,
+            "threadRole": "hub",
+        },
         "summaryCounts": summary_counts,
         "nodes": nodes,
         "edges": edges,
@@ -3426,6 +3420,7 @@ def build_visual_project_markdown(report: dict[str, Any]) -> str:
         f"- {visual_text(language, 'generated_at')}: {report['generatedAt']}",
         f"- {visual_text(language, 'sidecar')}: {report['sidecarRoot']}",
         f"- {visual_text(language, 'canonical_repo')}: {report['canonicalRepoRoot']}",
+        "- Project is context; the main graph is Task -> Thread -> Worktree(optional).",
         "",
         f"## {visual_text(language, 'project_graph')}",
         "",
@@ -3471,7 +3466,7 @@ def build_visual_project_markdown(report: dict[str, Any]) -> str:
                     markdown_cell(row.get("taskId") or row.get("branch") or "unknown"),
                     markdown_cell(row.get("parentTaskId", "")),
                     markdown_cell(row.get("phase", "")),
-                    markdown_cell(Path(str(row.get("worktreePath") or "")).name or visual_text(language, "missing")),
+                    markdown_cell(Path(str(row.get("worktreePath") or "")).name or "project-level / none"),
                     markdown_cell(row.get("threadRole", "")),
                     markdown_cell(row.get("threadLabel", "")),
                     markdown_cell(row.get("continuePhrase", "")),
@@ -6364,6 +6359,7 @@ def cmd_visualize_project(args: argparse.Namespace) -> int:
         "json": str(json_path),
         "html": str(html_path),
     }
+    report["dashboardPath"] = str(html_path)
     with file_lock(json_path):
         atomic_write_text(json_path, json.dumps(report, ensure_ascii=False, indent=2) + "\n")
     with file_lock(markdown_path):
@@ -6386,6 +6382,7 @@ def cmd_visualize_project(args: argparse.Namespace) -> int:
         json.dumps(
             {
                 "projectId": manager.project_id,
+                "dashboardPath": report["dashboardPath"],
                 "reportPaths": report["reportPaths"],
                 "summaryCounts": report.get("summaryCounts", {}),
                 "needsAttentionCount": len(report.get("needsAttention", [])),
