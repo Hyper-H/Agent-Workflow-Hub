@@ -33,7 +33,9 @@ The sidecar stays local at:
 
 Do not write dynamic task state into tracked repo docs. Do not require MCP for this workflow.
 
-Use the sidecar as workflow state, not as a memory replacement. It records auditable task/worktree/handoff/validation/safety state; it should not store chat transcripts, long logs, or model reasoning.
+Use the sidecar as workflow state, not as a memory replacement. It records auditable task/thread/environment/handoff/validation/safety state; it should not store chat transcripts, long logs, or model reasoning.
+
+Task topology is `Project context -> Task -> Thread -> Environment(optional)`. A task may have multiple recorded threads, and multiple threads may share the same environment/worktree. `threadId` is an internal machine key; users should normally see and discuss `threadLabel`.
 
 For multi-worktree projects, keep one stable project identity. The CLI resolves projectId in this order: `--project-id`, `CONTEXT_HANDOFF_PROJECT_ID`, existing local sidecar `config.json`, Git remote/common-dir, then repo root name fallback. Use `--project-id` only when the inferred identity would be wrong. Use `--base-branch dev` when the feature base branch is not the inferred default; it persists in sidecar config.
 
@@ -80,6 +82,8 @@ Use `load-handoff` when a new thread needs saved sidecar/handoff context from an
 
 - For same-role continuation in a new thread, first run `resume-query --query "<continue phrase or task>"`, then run `load-handoff --query "<same phrase>" --mode compact`.
 - Compact mode is the default. It should return the short receipt, next step, risks/blockers, and continue phrase without pasting full Markdown.
+- Handoffs must be structured and concise. They should remain directly pasteable into a downstream thread; `load-handoff` is reliable addressing/recovery, not a reason to create bloated handoff content.
+- Use `--thread-id` or `--thread-role` only when thread metadata matters. The Markdown handoff remains task-level in this version.
 - Use `--mode section --section validation --reason validation-needed` for validation threads.
 - Use `--mode section --section risks`, `--section thread-summary`, `--section facts`, or `--section next-step` for review/discussion follow-up when compact output is insufficient.
 - Use `--mode full` only when the user explicitly asks for the complete handoff, or when a compact/section load cannot answer a concrete continuation question.
@@ -152,7 +156,8 @@ Support roles remain available for structured sidecar state but are optional in 
 Default topology:
 
 - One project has one Project Hub Thread. It owns the project map, whole-project status, worktree inventory, routing decisions, and periodic `audit-project` / `weekly-report` summaries.
-- One active worktree/task has one Primary Execution Thread. It owns implementation, local planning, validation, handoff, finish/archive, and PR text for that task.
+- One task can have several durable threads, such as discussion, research, validation, and primary execution. A Primary Execution Thread owns implementation, local planning, validation, handoff, finish/archive, and PR text for that task.
+- A thread may use an Environment, usually a Git worktree, but project-level discussion/research threads can have no environment. No-environment threads are normal and must not be treated as missing worktrees.
 - Create a new worktree when the task needs an isolated branch, parallel implementation, or a different base. Reuse the existing worktree when continuing the same task or doing tiny scratch work that will not become durable.
 - A repo-bound but still fuzzy task can start directly in a Primary Execution Thread. Plan inside that thread first, then implement once the task is shaped.
 - A fuzzy product-direction task stays in the Project Hub Thread or a short-lived Discussion Thread until it becomes repo-bound and actionable.
@@ -247,7 +252,7 @@ You are a Dogfood/QA Thread for <project>. threadRole: dogfood. Feedback: <obser
 - `project-status`: Return compact sidecar project state for planning. This is not the full Git worktree inventory.
 - `weekly-report`: Generate a human-facing Markdown report under the sidecar `reports/` directory and reply with a short notification, not the full report by default.
 - `eval-report`: Generate lightweight workflow evaluation Markdown and JSON reports under the sidecar `reports/` directory. It reports proxy workflow metrics, not exact token usage or proof of correctness.
-- `visualize-project`: Generate Markdown + Mermaid, companion JSON, and a static HTML Project Hub dashboard under the sidecar `reports/` directory. Use the HTML dashboard as the default human-facing entrypoint: reply with `dashboardPath` or `reportPaths.html` first, then the Markdown path when useful. Do not paste the full JSON, full HTML, or full Markdown by default, and do not auto-open the HTML. The HTML dashboard keeps Project as page context, shows Task -> Thread -> Worktree(optional), supports route spotlight, uses text health badges, hides archive by default, keeps dependencies plus `th-project-hub` outside the ownership graph, and displays canonical `threadRole` separately from `threadLabel`.
+- `visualize-project`: Generate latest-only Markdown + Mermaid, companion JSON, and a static HTML Project Hub dashboard under the sidecar `reports/` directory. Use the HTML dashboard as the default human-facing entrypoint: reply with a clickable Markdown link from `dashboardUrl` when present, otherwise `dashboardPath` or `reportPaths.html`, then the Markdown path when useful. Do not paste the full JSON, full HTML, or full Markdown by default, and do not auto-open the HTML. The HTML dashboard keeps Project as page context, shows `Task -> Thread -> Environment(optional)`, supports route spotlight, uses text health badges, hides archive by default, keeps dependencies plus `th-project-hub` outside the ownership graph, and displays canonical `threadRole` separately from `threadLabel`.
 - `snapshot`: Print current worktree Git facts for lightweight backfill.
 - `draft-issue`: Generate a dogfood/debug issue draft with Facts, Inferences, Unknowns, Reproduction, Suggested Fix, and Priority. This never requires GitHub CLI.
 - `create-issue`: Create a dogfood/debug GitHub issue only when the user explicitly asks or dogfood issue mode is enabled, GitHub CLI is authenticated, content is safe, and no likely duplicate is found.
@@ -273,7 +278,7 @@ You are a Dogfood/QA Thread for <project>. threadRole: dogfood. Feedback: <obser
 - If the user says the project map is stale, the current project appears as an old version, many PRs were merged, or the sidecar baseline needs refresh, run `rebaseline-project` first. Do not archive stale tasks unless the user explicitly confirms; then use `--confirm-archive-stale`. Use `--update-current-hub-task` when the user wants the current hub baseline written.
 - If old dogfood/smoke blocker records, pre-reinstall failures, stale environment smoke tasks, or superseded dogfood findings pollute `audit-project` or `visualize-project`, run `hygiene-dogfood`. Treat it as a narrow dogfood smoke hygiene report; archive only one eligible stale record after explicit human confirmation with `--confirm-archive --task-id <id>`.
 - If the user asks whether Agent Workflow Hub is helping, asks for dogfood/evaluation metrics, or asks for a tool-effectiveness report, run `eval-report`. Keep it distinct from `weekly-report`, which is project progress reporting.
-- If the user says `visualize project`, `show project graph`, `可视化项目`, `显示项目图`, `项目关系图`, or `看一下项目全局`, run `visualize-project`. Reply with the HTML dashboard path first (`dashboardPath` or `reportPaths.html`), then the Markdown report path if useful; avoid pasting the full JSON, full HTML, or full Markdown unless asked.
+- If the user says `visualize project`, `show project graph`, `可视化项目`, `显示项目图`, `项目关系图`, or `看一下项目全局`, run `visualize-project`. Reply with a clickable HTML dashboard Markdown link first (`dashboardUrl` when present, otherwise `dashboardPath` or `reportPaths.html`), then the Markdown report path if useful; avoid pasting the full JSON, full HTML, or full Markdown unless asked.
 - If setup is uncertain, run `doctor` first. Explain any missing optional tools without installing them.
 
 ## Project Hub / Multi-Worktree Protocol
@@ -297,7 +302,7 @@ Never infer that sidecar active tasks are the full worktree inventory.
 
 Prefer old execution threads for backfill when they exist, because they may still have semantic context that Git cannot recover. If no old execution thread exists, use `newExecutionThreadPrompt` to open a new Primary Execution Thread. The new thread must recover or initialize sidecar state, distinguish facts/inferences/unknowns, add validation/safety/nextStep, save a handoff, and report back to the Project Hub. The prompt should not micromanage the agent's investigation path: the agent may use code reading, commits, PRs, issues, tests, or targeted search as needed.
 
-For project visualization requests, run `visualize-project` instead of asking the user to name Mermaid or workflow graph internals. Project is page/report context, not an ownership graph node. The graph should show the main chain `Task -> Thread -> Worktree(optional)`; state and health belong in badges/classes and the details table, not as default graph nodes.
+For project visualization requests, run `visualize-project` instead of asking the user to name Mermaid or workflow graph internals. Project is page/report context, not an ownership graph node. The graph should show the main chain `Task -> Thread -> Environment(optional)`; state and health belong in badges/classes and the details table, not as default graph nodes. Stable latest files overwrite prior dashboard reports for the project so the sidecar does not accumulate visualization snapshots.
 
 Task hierarchy is intentionally lightweight. Use `parentTaskId` for ownership when a feature has follow-up, validation, or bugfix child tasks. Do not invent dependencies or multiple parents; if a relationship is merely related but not owned, describe it in facts/inferences or next steps instead.
 
