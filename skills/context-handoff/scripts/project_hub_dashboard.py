@@ -423,15 +423,27 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
 
     .role-badge {
       min-height: 22px;
-      padding: 3px 7px;
-      border: 1px solid currentColor;
-      background: rgba(255, 254, 249, .92);
+      padding: 4px 8px 4px 6px;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      border: 1px solid rgba(32, 33, 29, .12);
+      background: rgba(255, 254, 249, .72);
       color: var(--accent);
       font-size: 11px;
       line-height: 1;
       font-weight: 900;
       letter-spacing: 0;
       white-space: nowrap;
+    }
+
+    .role-badge::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      display: inline-block;
+      background: currentColor;
+      border-radius: 999px;
     }
 
     .role-primary-execution { color: var(--focus); }
@@ -815,6 +827,25 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
       transform: translateY(0);
     }
 
+    .legend-strip {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(130px, 1fr));
+      gap: 10px;
+      padding: 12px;
+      background: rgba(255, 254, 249, .92);
+      border: 1px solid var(--line);
+    }
+
+    .legend-strip .audit-entry {
+      min-height: 72px;
+      background: var(--surface);
+    }
+
+    .view-tabs {
+      justify-self: end;
+      align-self: start;
+    }
+
     details.panel {
       display: block;
     }
@@ -851,6 +882,10 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
       .side {
         position: static;
         grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      }
+
+      .legend-strip {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
       }
     }
 
@@ -920,6 +955,10 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
       .panel-head {
         flex-direction: column;
       }
+
+      .view-tabs {
+        width: 100%;
+      }
     }
 
     @media (max-width: 540px) {
@@ -942,6 +981,10 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
       .timeline-item {
         grid-template-columns: 1fr;
       }
+
+      .legend-strip {
+        grid-template-columns: 1fr;
+      }
     }
   </style>
 </head>
@@ -958,17 +1001,12 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
     <div class="shell">
       <header class="topbar">
         <div>
-          <p id="dashboardEyebrow" class="eyebrow">项目中心 / V3.4 静态仪表盘</p>
+          <p id="dashboardEyebrow" class="eyebrow">项目中心 V3.4 静态仪表盘</p>
           <h1 id="projectTitle"></h1>
           <p id="projectSubtitle" class="subtitle"></p>
         </div>
         <div class="toolbar">
           <input id="search" class="search" type="search" placeholder="筛选 taskId / branch / environment / thread role / status" aria-label="筛选项目关系">
-          <div class="mode-switch" aria-label="视图切换">
-            <button id="mapMode" class="active" type="button">关系图</button>
-            <button id="matrixMode" type="button">矩阵</button>
-            <button id="timelineMode" type="button">时间线</button>
-          </div>
           <div class="mode-switch" aria-label="Language">
             <button id="zhMode" class="active" type="button">中文</button>
             <button id="enMode" type="button">English</button>
@@ -979,6 +1017,7 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
       <main class="content">
         <section class="workspace" aria-label="Project Hub dashboard">
           <div id="summaryGrid" class="summary-grid"></div>
+          <section class="legend-strip" id="legendBody" aria-label="Health legend"></section>
 
           <section class="panel" aria-labelledby="mapTitle">
             <div class="panel-head">
@@ -986,7 +1025,11 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
                 <p id="mapEyebrow" class="eyebrow">关系图</p>
                 <h2 id="mapTitle">Task -> Thread -> Environment</h2>
               </div>
-              <span id="mapNote" class="chip">Project 是页面上下文，dependency 不进入 ownership 图</span>
+              <div class="mode-switch view-tabs" aria-label="视图切换">
+                <button id="mapMode" class="active" type="button">关系图</button>
+                <button id="matrixMode" type="button">矩阵</button>
+                <button id="timelineMode" type="button">时间线</button>
+              </div>
             </div>
             <div id="mapView" class="map-wrap">
               <div id="contextBand" class="context-band"></div>
@@ -1048,25 +1091,16 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
             <div id="detailBody" class="detail-body"></div>
           </section>
 
-          <section class="panel">
-            <div class="panel-head">
-              <div>
-                <p id="legendEyebrow" class="eyebrow">状态图例</p>
-                <h2 id="legendTitle" class="detail-title">状态含义</h2>
-              </div>
-            </div>
-            <div id="legendBody" class="action-body"></div>
-          </section>
-
-          <section class="panel">
-            <div class="panel-head">
+          <details class="panel" aria-labelledby="actionTitle">
+            <summary class="panel-head">
               <div>
                 <p id="actionEyebrow" class="eyebrow">操作</p>
                 <h2 id="actionTitle" class="detail-title">可复制动作</h2>
               </div>
-            </div>
+              <span id="actionCue" class="collapse-cue"></span>
+            </summary>
             <div id="actionBody" class="action-body"></div>
-          </section>
+          </details>
         </aside>
       </main>
     </div>
@@ -1095,21 +1129,18 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
 
     const i18n = {
       "zh-CN": {
-        dashboardEyebrow: "项目中心 / V3.4 静态仪表盘",
+        dashboardEyebrow: "项目中心 V3.4 静态仪表盘",
         searchPlaceholder: "筛选 taskId / branch / environment / threadRole / status",
         mapTab: "关系图",
         matrixTab: "矩阵",
         timelineTab: "时间线",
         mapEyebrow: "关系图",
-        mapNote: "项目是页面上下文，依赖关系不进入归属图",
         needsEyebrow: "待处理",
         needsTitle: "需要处理的事项",
         routingEyebrow: "路由说明",
         routingTitle: "辅助判断，不作为归属关系",
         detailEyebrow: "详情",
         detailTitle: "选中路线",
-        legendEyebrow: "状态图例",
-        legendTitle: "状态含义",
         actionEyebrow: "操作",
         actionTitle: "可复制动作",
         summaryText: "项目是页面上下文。主关系固定为 Task -> Thread -> Environment(optional)；状态、risk、nextStep、validation、handoff 在详情和矩阵中呈现。",
@@ -1148,30 +1179,24 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
         noActions: "没有 payload 提供的可复制 prompt。",
         sidecarOnly: "只显示 sidecar payload 已提供的 action prompt。"
         ,
-        updated: "更新",
-        seen: "登记",
-        codexUpdated: "Codex 更新",
         noTime: "暂无时间",
         expand: "展开",
         collapse: "收起",
         items: "项"
       },
       en: {
-        dashboardEyebrow: "Project Hub / V3.4 Static Dashboard",
+        dashboardEyebrow: "Project Hub V3.4 Static Dashboard",
         searchPlaceholder: "Filter taskId / branch / environment / threadRole / status",
         mapTab: "Map",
         matrixTab: "Matrix",
         timelineTab: "Activity",
         mapEyebrow: "Map",
-        mapNote: "Project is page context; dependencies stay outside the ownership graph",
         needsEyebrow: "Needs Attention",
         needsTitle: "Items to handle",
         routingEyebrow: "Routing Notes",
         routingTitle: "Supporting evidence, not ownership",
         detailEyebrow: "Detail",
         detailTitle: "Selected route",
-        legendEyebrow: "Health Legend",
-        legendTitle: "Status meaning",
         actionEyebrow: "Actions",
         actionTitle: "Copyable actions",
         summaryText: "Project is page context. The main chain is Task -> Thread -> Environment(optional); status, risk, nextStep, validation, and handoff live in details and matrix.",
@@ -1209,9 +1234,6 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
         warnings: "warnings",
         noActions: "No copyable prompt was provided by the payload.",
         sidecarOnly: "Only action prompts already provided by the sidecar payload are shown.",
-        updated: "Updated",
-        seen: "Seen",
-        codexUpdated: "Codex updated",
         noTime: "No time",
         expand: "Expand",
         collapse: "Collapse",
@@ -1283,8 +1305,15 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
       if (!text) return "";
       const date = new Date(text);
       if (Number.isNaN(date.getTime())) return text.slice(0, 19);
-      return date.toLocaleString(state.lang === "zh-CN" ? "zh-CN" : "en-US", {
-        month: "2-digit",
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, "0");
+      const day = String(date.getDate()).padStart(2, "0");
+      const hour = String(date.getHours()).padStart(2, "0");
+      const minute = String(date.getMinutes()).padStart(2, "0");
+      if (state.lang === "zh-CN") return `${year}-${month}-${day} ${hour}:${minute}`;
+      return date.toLocaleString("en-US", {
+        year: "numeric",
+        month: "short",
         day: "2-digit",
         hour: "2-digit",
         minute: "2-digit"
@@ -1299,12 +1328,12 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
       if (!node) return t("noTime");
       if (node.type === "thread") {
         const codex = latestTimestamp(node.rows.map((row) => row.codexUpdatedAt));
-        if (codex) return `${t("codexUpdated")}: ${compactTime(codex)}`;
+        if (codex) return compactTime(codex);
         const seen = latestTimestamp(node.rows.map((row) => row.lastSeenAt));
-        if (seen) return `${t("seen")}: ${compactTime(seen)}`;
+        if (seen) return compactTime(seen);
       }
       const updated = latestTimestamp(node.rows.map((row) => row.updatedAt || row.validationAt));
-      return updated ? `${t("updated")}: ${compactTime(updated)}` : t("noTime");
+      return updated ? compactTime(updated) : t("noTime");
     }
 
     function buildGraph(sourceRows) {
@@ -1442,7 +1471,7 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
     function renderChrome() {
       document.documentElement.lang = state.lang;
       document.getElementById("projectTitle").textContent = payload.projectId || "Agent Workflow Hub";
-      document.getElementById("projectSubtitle").textContent = `${t("baseBranch")}: ${payload.baseBranch || "unknown"}. ${t("generated")}: ${payload.generatedAt || "unknown"}.`;
+      document.getElementById("projectSubtitle").textContent = `${t("baseBranch")}: ${payload.baseBranch || "unknown"}. ${t("generated")}: ${compactTime(payload.generatedAt) || "unknown"}.`;
       document.getElementById("dashboardEyebrow").textContent = t("dashboardEyebrow");
       document.getElementById("search").placeholder = t("searchPlaceholder");
       document.getElementById("search").setAttribute("aria-label", t("searchPlaceholder"));
@@ -1452,7 +1481,6 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
       document.getElementById("zhMode").classList.toggle("active", state.lang === "zh-CN");
       document.getElementById("enMode").classList.toggle("active", state.lang === "en");
       document.getElementById("mapEyebrow").textContent = t("mapEyebrow");
-      document.getElementById("mapNote").textContent = t("mapNote");
       document.getElementById("taskLaneTitle").textContent = "Task";
       document.getElementById("threadLaneTitle").textContent = "Thread";
       document.getElementById("environmentLaneTitle").textContent = "Environment";
@@ -1462,8 +1490,6 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
       document.getElementById("secondaryTitle").textContent = t("routingTitle");
       document.getElementById("detailEyebrow").textContent = t("detailEyebrow");
       document.getElementById("detailTitle").textContent = t("detailTitle");
-      document.getElementById("legendEyebrow").textContent = t("legendEyebrow");
-      document.getElementById("legendTitle").textContent = t("legendTitle");
       document.getElementById("actionEyebrow").textContent = t("actionEyebrow");
       document.getElementById("actionTitle").textContent = t("actionTitle");
     }
@@ -1472,7 +1498,7 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
       const hidden = archiveSummary.archivedHidden || 0;
       document.getElementById("contextBand").innerHTML = `
         <div>
-          <b>${escapeHtml(payload.projectId || "Project")} / ${escapeHtml(t("projectContext"))}</b>
+          <b>${escapeHtml(payload.projectId || "Project")} · ${escapeHtml(t("projectContext"))}</b>
           <span>${escapeHtml(t("contextText"))}${hidden ? `: ${hidden}` : ""}.</span>
         </div>
         <span class="chip">${escapeHtml(t("contextHub"))}</span>
@@ -1632,7 +1658,7 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
         <div class="timeline-item">
           <span class="chip">${escapeHtml(item.kind || "activity")}</span>
           <div>
-            <b>${escapeHtml(item.timestamp || item.title || "activity")}</b>
+            <b>${escapeHtml(compactTime(item.timestamp) || item.title || "activity")}</b>
             <p>${escapeHtml([item.title, item.taskId, item.threadLabel, item.detail].filter(Boolean).join(" / "))}</p>
           </div>
         </div>
@@ -1851,6 +1877,8 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
 
     function renderActions() {
       const prompts = collectSidecarPrompts();
+      const cue = document.getElementById("actionCue");
+      if (cue) cue.textContent = `${prompts.length} ${t("items")}`;
       document.getElementById("actionBody").innerHTML = `
         <div class="audit-entry">
           <span class="status-pill status-attention">sidecar action</span>
