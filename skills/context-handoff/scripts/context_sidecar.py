@@ -10,10 +10,12 @@ import os
 import re
 import secrets
 import shlex
+import sqlite3
 import subprocess
 import sys
 import shutil
 import time
+import webbrowser
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -675,6 +677,9 @@ def normalize_thread_entry(
         "handoffAvailable": bool(task.get("_handoffAvailable", False) if handoff_available is None else handoff_available),
         "handoffPath": handoff_path or str(thread.get("handoffPath") or task.get("_handoffPath") or ""),
         "compactReceipt": short_text(str(thread.get("compactReceipt") or task.get("compactReceipt") or ""), max_len=500),
+        "lastSeenAt": str(thread.get("lastSeenAt") or ""),
+        "codexUpdatedAt": str(thread.get("codexUpdatedAt") or ""),
+        "registrationSource": str(thread.get("registrationSource") or ""),
         "updatedAt": str(thread.get("updatedAt") or task.get("updatedAt") or now_iso()),
     }
 
@@ -742,6 +747,10 @@ def compact_thread_entries(threads: list[dict[str, Any]]) -> list[dict[str, Any]
                 "environmentType": thread.get("environmentType", ""),
                 "nextStep": thread.get("nextStep", ""),
                 "lastSummary": thread.get("lastSummary", ""),
+                "codexThreadId": thread.get("codexThreadId", ""),
+                "lastSeenAt": thread.get("lastSeenAt", ""),
+                "codexUpdatedAt": thread.get("codexUpdatedAt", ""),
+                "registrationSource": thread.get("registrationSource", ""),
                 "handoffAvailable": bool(thread.get("handoffAvailable", False)),
                 "updatedAt": thread.get("updatedAt", ""),
             }
@@ -770,6 +779,9 @@ def upsert_current_thread(
     selected: dict[str, Any] | None = None
     if requested_id:
         selected = next((thread for thread in threads if str(thread.get("threadId") or "") == requested_id), None)
+    codex_thread_id = short_text(str(getattr(args, "codex_thread_id", "") or ""), max_len=80)
+    if selected is None and codex_thread_id:
+        selected = next((thread for thread in threads if str(thread.get("codexThreadId") or "") == codex_thread_id), None)
     if selected is None:
         matches = [
             thread
@@ -787,6 +799,7 @@ def upsert_current_thread(
     selected.update(
         {
             "threadRole": role,
+            "codexThreadId": codex_thread_id or str(selected.get("codexThreadId") or ""),
             "threadLabel": label,
             "threadDisplayLabel": label or role,
             "threadPurpose": purpose,
@@ -798,9 +811,13 @@ def upsert_current_thread(
             "handoffAvailable": bool(task.get("_handoffAvailable", False) if handoff_available is None else handoff_available),
             "handoffPath": handoff_path or str(task.get("_handoffPath") or selected.get("handoffPath") or ""),
             "compactReceipt": short_text(compact_receipt or str(task.get("compactReceipt") or ""), max_len=500),
+            "lastSeenAt": now_iso(),
+            "registrationSource": short_text(str(getattr(args, "registration_source", None) or selected.get("registrationSource") or ""), max_len=80),
             "updatedAt": now_iso(),
         }
     )
+    if getattr(args, "codex_updated_at", None):
+        selected["codexUpdatedAt"] = short_text(str(args.codex_updated_at), max_len=80)
     task["threads"] = [
         normalize_thread_entry(thread, task, handoff_available=thread.get("handoffAvailable", False), handoff_path=str(thread.get("handoffPath") or ""))
         for thread in threads
@@ -1514,6 +1531,455 @@ def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
             fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
             fh.flush()
             os.fsync(fh.fileno())
+
+
+CODEX_THREAD_DISCOVERY_AUDIT_FILE = "thread-discovery-audit.json"
+
+
+def codex_home() -> Path:
+    return Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
+
+
+def clean_codex_path(value: str) -> str:
+    value = (value or "").strip()
+    if value.startswith("\\\\?\\"):
+        value = value[4:]
+    return value
+
+
+def safe_resolved_path(value: str) -> str:
+    value = clean_codex_path(value)
+    if not value:
+        return ""
+    with contextlib.suppress(OSError, RuntimeError):
+        return str(Path(value).resolve())
+    return value
+
+
+def path_contains_or_equals(root: str, child: str) -> bool:
+    root = safe_resolved_path(root)
+    child = safe_resolved_path(child)
+    if not root or not child:
+        return False
+    try:
+        child_path = Path(child)
+        root_path = Path(root)
+        return child_path == root_path or root_path in child_path.parents
+    except (OSError, RuntimeError, ValueError):
+        return child.casefold().startswith(root.rstrip("\\/").casefold() + os.sep)
+
+
+def normalized_remote_identity(value: str) -> str:
+    value = (value or "").strip()
+    if not value:
+        return ""
+    normalized = value
+    if normalized.startswith("git@github.com:"):
+        normalized = normalized.replace("git@github.com:", "https://github.com/")
+    if normalized.endswith(".git"):
+        normalized = normalized[:-4]
+    match = re.search(r"github\.com[:/](?P<owner>[^/]+)/(?P<repo>[^/#?]+)", normalized, flags=re.IGNORECASE)
+    if match:
+        return f"{match.group('owner').casefold()}/{match.group('repo').casefold()}"
+    return normalized.casefold()
+
+
+def timestamp_to_iso(value: Any) -> str:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if numeric <= 0:
+        return ""
+    if numeric > 10_000_000_000:
+        numeric = numeric / 1000.0
+    with contextlib.suppress(OSError, OverflowError, ValueError):
+        return datetime.fromtimestamp(numeric).astimezone().isoformat(timespec="seconds")
+    return ""
+
+
+def parse_iso_timestamp(value: str) -> float:
+    value = (value or "").strip()
+    if not value:
+        return 0.0
+    with contextlib.suppress(ValueError):
+        return datetime.fromisoformat(value).timestamp()
+    return 0.0
+
+
+def codex_thread_audit_path(manager: "SidecarManager") -> Path:
+    return manager.sidecar_root / CODEX_THREAD_DISCOVERY_AUDIT_FILE
+
+
+def read_codex_thread_audit(manager: "SidecarManager") -> dict[str, Any]:
+    payload = read_json(codex_thread_audit_path(manager), {})
+    return payload if isinstance(payload, dict) else {}
+
+
+def known_project_roots(manager: "SidecarManager", payload: dict[str, Any], config: dict[str, Any]) -> list[str]:
+    roots: list[str] = [
+        str(manager.git.repo_root),
+        str(manager.git.worktree_path),
+        str(config.get("canonicalRepoRoot") or ""),
+        str(config.get("repoRoot") or ""),
+        str(config.get("currentWorktreePath") or ""),
+        str(config.get("lastWorktreePath") or ""),
+    ]
+    roots.extend(str(item) for item in config.get("knownWorktreeRoots") or [])
+    for task in payload.get("tasks", []):
+        if not isinstance(task, dict):
+            continue
+        roots.extend(
+            str(task.get(key) or "")
+            for key in ["worktreePath", "repoRoot", "storageAnchor"]
+        )
+        for thread in ensure_task_threads(task, mutate=False):
+            roots.append(str(thread.get("worktreePath") or ""))
+    return unique_nonempty([safe_resolved_path(root) for root in roots], limit=200)
+
+
+def codex_thread_belongs_to_project(record: dict[str, Any], manager: "SidecarManager", roots: list[str], config: dict[str, Any]) -> bool:
+    cwd = str(record.get("cwd") or "")
+    if cwd and any(path_contains_or_equals(root, cwd) for root in roots):
+        return True
+    record_remote = normalized_remote_identity(str(record.get("gitOriginUrl") or ""))
+    project_remotes = [
+        normalized_remote_identity(manager.git.remote_url),
+        normalized_remote_identity(str(config.get("remoteUrl") or "")),
+    ]
+    if record_remote and record_remote in {remote for remote in project_remotes if remote}:
+        return True
+    return False
+
+
+def sqlite_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {str(row[1]) for row in conn.execute(f'PRAGMA table_info("{table}")').fetchall()}
+
+
+def discover_codex_threads_from_sqlite(
+    manager: "SidecarManager",
+    payload: dict[str, Any],
+    *,
+    include_archived: bool = False,
+    include_title: bool = False,
+    limit: int = 200,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+    warnings: list[str] = []
+    records: list[dict[str, Any]] = []
+    spawn_edges: list[dict[str, str]] = []
+    home = codex_home()
+    config = read_json(manager.config_path, {})
+    config = config if isinstance(config, dict) else {}
+    roots = known_project_roots(manager, payload, config)
+    db_paths = sorted(home.glob("state_*.sqlite"), key=lambda path: path.stat().st_mtime if path.exists() else 0, reverse=True)
+    if not db_paths:
+        warnings.append(f"No Codex state_*.sqlite found under {home}.")
+        return records, spawn_edges, warnings
+    for db_path in db_paths[:3]:
+        try:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            conn.row_factory = sqlite3.Row
+            tables = {str(row[0]) for row in conn.execute("select name from sqlite_master where type='table'").fetchall()}
+            if "threads" not in tables:
+                warnings.append(f"{db_path.name} has no threads table.")
+                conn.close()
+                continue
+            cols = sqlite_columns(conn, "threads")
+            required = {"id", "cwd", "updated_at", "archived"}
+            if not required.issubset(cols):
+                warnings.append(f"{db_path.name} threads table is missing required columns.")
+                conn.close()
+                continue
+            select_cols = [
+                "id",
+                "cwd",
+                "created_at" if "created_at" in cols else "0 as created_at",
+                "updated_at",
+                "archived",
+                "git_branch" if "git_branch" in cols else "'' as git_branch",
+                "git_sha" if "git_sha" in cols else "'' as git_sha",
+                "git_origin_url" if "git_origin_url" in cols else "'' as git_origin_url",
+                "rollout_path" if "rollout_path" in cols else "'' as rollout_path",
+                "thread_source" if "thread_source" in cols else "'' as thread_source",
+                "agent_role" if "agent_role" in cols else "'' as agent_role",
+                "agent_nickname" if "agent_nickname" in cols else "'' as agent_nickname",
+            ]
+            if include_title:
+                select_cols.append("title" if "title" in cols else "'' as title")
+            query = f"select {', '.join(select_cols)} from threads order by updated_at desc"
+            for row in conn.execute(query):
+                archived = bool(row["archived"])
+                if archived and not include_archived:
+                    continue
+                record = {
+                    "codexThreadId": str(row["id"] or ""),
+                    "cwd": clean_codex_path(str(row["cwd"] or "")),
+                    "createdAt": timestamp_to_iso(row["created_at"]),
+                    "updatedAt": timestamp_to_iso(row["updated_at"]),
+                    "updatedAtRaw": row["updated_at"],
+                    "archived": archived,
+                    "gitBranch": str(row["git_branch"] or ""),
+                    "gitSha": str(row["git_sha"] or ""),
+                    "gitOriginUrl": str(row["git_origin_url"] or ""),
+                    "rolloutPath": clean_codex_path(str(row["rollout_path"] or "")),
+                    "threadSource": str(row["thread_source"] or ""),
+                    "agentRole": str(row["agent_role"] or ""),
+                    "agentNickname": str(row["agent_nickname"] or ""),
+                    "source": "codex-sqlite",
+                    "sourcePath": str(db_path),
+                }
+                if include_title:
+                    record["title"] = short_text(str(row["title"] or ""), max_len=120)
+                if not record["codexThreadId"]:
+                    continue
+                if codex_thread_belongs_to_project(record, manager, roots, config):
+                    records.append(record)
+                    if len(records) >= limit:
+                        break
+            if "thread_spawn_edges" in tables:
+                edge_cols = sqlite_columns(conn, "thread_spawn_edges")
+                if {"parent_thread_id", "child_thread_id", "status"}.issubset(edge_cols):
+                    known_ids = {item["codexThreadId"] for item in records}
+                    for edge in conn.execute("select parent_thread_id, child_thread_id, status from thread_spawn_edges"):
+                        parent_id = str(edge["parent_thread_id"] or "")
+                        child_id = str(edge["child_thread_id"] or "")
+                        if parent_id in known_ids or child_id in known_ids:
+                            spawn_edges.append({"parentThreadId": parent_id, "childThreadId": child_id, "status": str(edge["status"] or "")})
+            conn.close()
+            if records:
+                break
+        except sqlite3.Error as exc:
+            warnings.append(f"Could not read {db_path}: {short_text(str(exc), max_len=200)}")
+    return records[:limit], spawn_edges[:limit], warnings
+
+
+def discover_codex_threads_from_session_meta(
+    manager: "SidecarManager",
+    payload: dict[str, Any],
+    *,
+    include_archived: bool = False,
+    limit: int = 200,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    warnings: list[str] = []
+    records: list[dict[str, Any]] = []
+    home = codex_home()
+    config = read_json(manager.config_path, {})
+    config = config if isinstance(config, dict) else {}
+    roots = known_project_roots(manager, payload, config)
+    session_dirs = [home / "sessions"]
+    if include_archived:
+        session_dirs.append(home / "archived_sessions")
+    paths: list[Path] = []
+    for session_dir in session_dirs:
+        if session_dir.exists():
+            paths.extend(session_dir.glob("**/*.jsonl"))
+    for path in sorted(paths, key=lambda item: item.stat().st_mtime if item.exists() else 0, reverse=True):
+        if len(records) >= limit:
+            break
+        try:
+            with path.open("r", encoding="utf-8-sig") as fh:
+                first = fh.readline()
+            if not first.strip():
+                continue
+            payload_line = json.loads(first)
+            if payload_line.get("type") != "session_meta":
+                continue
+            meta = payload_line.get("payload") or {}
+            record = {
+                "codexThreadId": str(meta.get("id") or meta.get("session_id") or ""),
+                "cwd": clean_codex_path(str(meta.get("cwd") or "")),
+                "createdAt": str(meta.get("timestamp") or payload_line.get("timestamp") or ""),
+                "updatedAt": timestamp_to_iso(path.stat().st_mtime),
+                "updatedAtRaw": path.stat().st_mtime,
+                "archived": "archived_sessions" in str(path),
+                "gitBranch": "",
+                "gitSha": "",
+                "gitOriginUrl": "",
+                "rolloutPath": str(path),
+                "threadSource": str(meta.get("thread_source") or ""),
+                "agentRole": str(meta.get("agent_role") or ""),
+                "agentNickname": str(meta.get("agent_nickname") or ""),
+                "source": "session-meta",
+                "sourcePath": str(path),
+            }
+            if record["codexThreadId"] and codex_thread_belongs_to_project(record, manager, roots, config):
+                records.append(record)
+        except (OSError, json.JSONDecodeError) as exc:
+            warnings.append(f"Could not read session meta {path.name}: {short_text(str(exc), max_len=120)}")
+            if len(warnings) >= 5:
+                break
+    if not records:
+        warnings.append("No matching Codex session_meta records found.")
+    return records, warnings
+
+
+def flatten_sidecar_threads(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for task in payload.get("tasks", []):
+        if not isinstance(task, dict) or task.get("status", "active") not in VALID_STATUSES:
+            continue
+        for thread in ensure_task_threads(task, mutate=False):
+            items.append(
+                {
+                    "taskId": task.get("taskId", ""),
+                    "taskStatus": task.get("status", "active"),
+                    "threadId": thread.get("threadId", ""),
+                    "codexThreadId": thread.get("codexThreadId", ""),
+                    "threadRole": thread.get("threadRole", ""),
+                    "threadLabel": thread_display_label(thread),
+                    "worktreePath": thread.get("worktreePath", ""),
+                    "updatedAt": thread.get("updatedAt", ""),
+                    "lastSeenAt": thread.get("lastSeenAt", ""),
+                    "codexUpdatedAt": thread.get("codexUpdatedAt", ""),
+                }
+            )
+    return items
+
+
+def refresh_prompt_for_discovered_thread(manager: "SidecarManager", record: dict[str, Any]) -> str:
+    return (
+        "Use $agent-workflow-hub first. "
+        f"Your Codex thread id appears to be {record.get('codexThreadId')}. "
+        f"Project: {manager.project_id}. Repo/worktree if applicable: {record.get('cwd') or manager.git.repo_root}. "
+        "Run refresh-thread-registration for this project, attach the correct task/thread role if known, and save only a compact sidecar update. "
+        "Do not paste full chat history."
+    )
+
+
+def compare_codex_threads_to_sidecar(manager: "SidecarManager", discovered: list[dict[str, Any]], sidecar_threads: list[dict[str, Any]]) -> dict[str, Any]:
+    discovered_by_id = {str(item.get("codexThreadId") or ""): item for item in discovered if item.get("codexThreadId")}
+    registered_by_codex_id = {str(item.get("codexThreadId") or ""): item for item in sidecar_threads if item.get("codexThreadId")}
+    unregistered: list[dict[str, Any]] = []
+    registered_but_not_seen: list[dict[str, Any]] = []
+    stale_registered: list[dict[str, Any]] = []
+    confirmed = 0
+    for codex_id, record in discovered_by_id.items():
+        registered = registered_by_codex_id.get(codex_id)
+        if not registered:
+            item = {
+                "codexThreadId": codex_id,
+                "cwd": record.get("cwd", ""),
+                "updatedAt": record.get("updatedAt", ""),
+                "archived": bool(record.get("archived", False)),
+                "gitBranch": record.get("gitBranch", ""),
+                "matchStatus": "unregistered",
+                "suggestedAction": "refresh-thread-registration",
+                "reason": "seen in Codex storage but not registered in sidecar",
+            }
+            unregistered.append(item)
+            continue
+        confirmed += 1
+        codex_ts = parse_iso_timestamp(str(record.get("updatedAt") or ""))
+        sidecar_ts = max(parse_iso_timestamp(str(registered.get("lastSeenAt") or "")), parse_iso_timestamp(str(registered.get("updatedAt") or "")))
+        if codex_ts and sidecar_ts and codex_ts - sidecar_ts > 60:
+            stale_registered.append(
+                {
+                    "codexThreadId": codex_id,
+                    "taskId": registered.get("taskId", ""),
+                    "threadId": registered.get("threadId", ""),
+                    "threadLabel": registered.get("threadLabel", ""),
+                    "codexUpdatedAt": record.get("updatedAt", ""),
+                    "sidecarUpdatedAt": registered.get("updatedAt", ""),
+                    "matchStatus": "registered-stale",
+                    "suggestedAction": "refresh-thread-registration",
+                    "reason": "Codex thread changed after the sidecar thread registration",
+                }
+            )
+    for codex_id, registered in registered_by_codex_id.items():
+        if codex_id not in discovered_by_id:
+            registered_but_not_seen.append(
+                {
+                    "codexThreadId": codex_id,
+                    "taskId": registered.get("taskId", ""),
+                    "threadId": registered.get("threadId", ""),
+                    "threadLabel": registered.get("threadLabel", ""),
+                    "updatedAt": registered.get("updatedAt", ""),
+                    "matchStatus": "registered-not-seen",
+                    "suggestedAction": "inspect-thread-or-storage",
+                    "reason": "registered in sidecar but not seen in Codex local storage scan",
+                }
+            )
+    refresh_requests = []
+    for item in [*unregistered, *stale_registered]:
+        record = discovered_by_id.get(str(item.get("codexThreadId") or ""))
+        if not record:
+            continue
+        refresh_requests.append(
+            {
+                "codexThreadId": item.get("codexThreadId", ""),
+                "cwd": record.get("cwd", ""),
+                "reason": item.get("reason", ""),
+                "prompt": refresh_prompt_for_discovered_thread(manager, record),
+            }
+        )
+    return {
+        "registeredThreads": len(sidecar_threads),
+        "registeredCodexThreadIds": len(registered_by_codex_id),
+        "codexThreadsSeen": len(discovered),
+        "confirmed": confirmed,
+        "unregisteredCodexThreads": unregistered,
+        "registeredButNotSeen": registered_but_not_seen,
+        "staleRegisteredThreads": stale_registered,
+        "refreshRequests": refresh_requests,
+    }
+
+
+def build_thread_reconcile_payload(
+    manager: "SidecarManager",
+    *,
+    include_archived: bool = False,
+    include_title: bool = False,
+    limit: int = 50,
+) -> dict[str, Any]:
+    payload = read_active_tasks_payload(manager)
+    discovered, spawn_edges, warnings = discover_codex_threads_from_sqlite(
+        manager,
+        payload,
+        include_archived=include_archived,
+        include_title=include_title,
+        limit=max(limit, 1) * 4,
+    )
+    provider = "codex-sqlite"
+    if not discovered:
+        fallback_records, fallback_warnings = discover_codex_threads_from_session_meta(
+            manager,
+            payload,
+            include_archived=include_archived,
+            limit=max(limit, 1) * 4,
+        )
+        discovered = fallback_records
+        warnings.extend(fallback_warnings)
+        provider = "session-meta" if fallback_records else "none"
+    sidecar_threads = flatten_sidecar_threads(payload)
+    comparison = compare_codex_threads_to_sidecar(manager, discovered, sidecar_threads)
+    summary = {
+        "registeredThreads": comparison.get("registeredThreads", 0),
+        "registeredCodexThreadIds": comparison.get("registeredCodexThreadIds", 0),
+        "codexThreadsSeen": comparison.get("codexThreadsSeen", 0),
+        "confirmed": comparison.get("confirmed", 0),
+        "unregistered": len(comparison.get("unregisteredCodexThreads", [])),
+        "registeredButNotSeen": len(comparison.get("registeredButNotSeen", [])),
+        "staleRegistered": len(comparison.get("staleRegisteredThreads", [])),
+        "refreshRequests": len(comparison.get("refreshRequests", [])),
+    }
+    for key in ["unregisteredCodexThreads", "registeredButNotSeen", "staleRegisteredThreads", "refreshRequests"]:
+        comparison[key] = comparison.get(key, [])[:limit]
+    return {
+        "projectId": manager.project_id,
+        "generatedAt": now_iso(),
+        "provider": provider,
+        "sidecarRoot": str(manager.sidecar_root),
+        "includeArchived": include_archived,
+        "includeTitle": include_title,
+        "summary": summary,
+        "unregisteredCodexThreads": comparison.get("unregisteredCodexThreads", []),
+        "registeredButNotSeen": comparison.get("registeredButNotSeen", []),
+        "staleRegisteredThreads": comparison.get("staleRegisteredThreads", []),
+        "refreshRequests": comparison.get("refreshRequests", []),
+        "spawnEdgesObserved": spawn_edges[:limit],
+        "warnings": warnings[:10],
+        "repoMutated": False,
+    }
 
 
 @dataclass
@@ -3319,7 +3785,9 @@ def base_visual_row_from_task(task: dict[str, Any], *, archived: bool = False) -
         "health": "archived" if archived else "attention",
         "handoffAvailable": handoff_available,
         "validationPresent": task_validation_present(task),
+        "validation": task.get("validation") or {},
         "safetyRulesPresent": bool(task.get("safetyRules")),
+        "safetyRules": task.get("safetyRules") or [],
         "dirty": bool(task.get("dirtyFiles") or []),
         "dirtyFiles": task.get("dirtyFiles") or [],
         "stale": False,
@@ -3333,6 +3801,8 @@ def base_visual_row_from_task(task: dict[str, Any], *, archived: bool = False) -
         "archived": archived,
         "handoffPath": task.get("_handoffPath", ""),
         "archivePath": task.get("_archivePath", ""),
+        "archivedAt": task.get("archivedAt", ""),
+        "updatedAt": task.get("updatedAt", ""),
     }
     row["health"] = visual_health_for_row(row)
     return row
@@ -3358,6 +3828,7 @@ def visual_rows_for_task_threads(base_row: dict[str, Any], task: dict[str, Any])
                 "threadPurpose": thread.get("threadPurpose", ""),
                 "worktreePath": worktree_path,
                 "environmentType": thread.get("environmentType", "") or ("worktree" if worktree_path else "project-level"),
+                "codexThreadId": thread.get("codexThreadId", ""),
                 "nextStep": thread.get("nextStep", "") or row.get("nextStep", ""),
                 "continuePhrase": thread.get("continuePhrase", "") or row.get("continuePhrase", ""),
                 "compactReceipt": thread.get("compactReceipt", "") or row.get("compactReceipt", ""),
@@ -3372,7 +3843,165 @@ def visual_rows_for_task_threads(base_row: dict[str, Any], task: dict[str, Any])
             row["staleReasons"] = []
         row["health"] = visual_health_for_row(row)
         rows.append(row)
-    return rows
+    return collapse_duplicate_visual_thread_rows(rows)
+
+
+def visual_thread_duplicate_key(row: dict[str, Any]) -> str:
+    codex_thread_id = str(row.get("codexThreadId") or "").strip()
+    if codex_thread_id:
+        return f"codex:{codex_thread_id}"
+    return "|".join(
+        [
+            str(row.get("taskId") or ""),
+            str(row.get("threadRole") or ""),
+            str(row.get("threadDisplayLabel") or row.get("threadLabel") or ""),
+            str(row.get("threadPurpose") or ""),
+        ]
+    ).casefold()
+
+
+def prefer_visual_thread_row(existing: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
+    role = str(candidate.get("threadRole") or existing.get("threadRole") or "")
+    if role in {"hub", "discussion", "research", "explainer"}:
+        if not candidate.get("worktreePath") and existing.get("worktreePath"):
+            return candidate
+        return existing
+    if candidate.get("worktreePath") and not existing.get("worktreePath"):
+        return candidate
+    return existing
+
+
+def collapse_duplicate_visual_thread_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    collapsed: dict[str, dict[str, Any]] = {}
+    duplicates: dict[str, int] = {}
+    order: list[str] = []
+    for row in rows:
+        key = visual_thread_duplicate_key(row)
+        if not key.strip("|"):
+            order.append(f"row:{len(order)}")
+            collapsed[order[-1]] = row
+            continue
+        if key not in collapsed:
+            collapsed[key] = row
+            order.append(key)
+            continue
+        duplicates[key] = duplicates.get(key, 1) + 1
+        collapsed[key] = prefer_visual_thread_row(collapsed[key], row)
+    result = []
+    for key in order:
+        row = collapsed[key]
+        if key in duplicates:
+            row = dict(row)
+            row["duplicateThreadRowsCollapsed"] = duplicates[key]
+            row["recommendedAction"] = row.get("recommendedAction") or "duplicate sidecar thread rows collapsed in visualization"
+            row["recommendedActionType"] = row.get("recommendedActionType") or "duplicate-thread-registration"
+        result.append(row)
+    return result
+
+
+def add_visual_activity_event(events: list[dict[str, Any]], seen: set[tuple[str, str, str]], *, timestamp: str, kind: str, title: str, detail: str = "", task_id: str = "", thread_label: str = "", source: str = "") -> None:
+    timestamp = str(timestamp or "").strip()
+    kind = str(kind or "").strip()
+    title = short_text(str(title or kind or "activity"), max_len=120)
+    if not timestamp or not kind:
+        return
+    key = (timestamp, kind, str(task_id or title))
+    if key in seen:
+        return
+    seen.add(key)
+    events.append(
+        {
+            "timestamp": timestamp,
+            "kind": kind,
+            "title": title,
+            "detail": short_text(str(detail or ""), max_len=260),
+            "taskId": str(task_id or ""),
+            "threadLabel": short_text(str(thread_label or ""), max_len=120),
+            "source": source or "sidecar",
+        }
+    )
+
+
+def build_visual_activity_events(manager: SidecarManager, task_rows: list[dict[str, Any]], archived_tasks: list[dict[str, Any]], limit: int = 40) -> list[dict[str, Any]]:
+    activity: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    sidecar_events, _ = read_events(manager)
+    for event in sidecar_events[-120:]:
+        event_name = str(event.get("event") or "").strip()
+        if not event_name:
+            continue
+        task_id = str(event.get("taskId") or "")
+        detail_fields = []
+        for key in ["scanScope", "reportHtmlPath", "handoffPath", "validationPresent", "needsAttentionCount", "visibleTasks"]:
+            value = event.get(key)
+            if value not in (None, "", []):
+                detail_fields.append(f"{key}={value}")
+        add_visual_activity_event(
+            activity,
+            seen,
+            timestamp=str(event.get("timestamp") or ""),
+            kind=event_name,
+            title=event_name,
+            detail=", ".join(detail_fields),
+            task_id=task_id,
+            source="sidecar event log",
+        )
+    for row in task_rows:
+        task_id = str(row.get("taskId") or "")
+        thread_label = str(row.get("threadDisplayLabel") or row.get("threadLabel") or row.get("threadRole") or "")
+        validation_at = str(row.get("validationAt") or "")
+        if validation_at:
+            add_visual_activity_event(
+                activity,
+                seen,
+                timestamp=validation_at,
+                kind="validation",
+                title="validation recorded",
+                detail=row.get("branch", ""),
+                task_id=task_id,
+                thread_label=thread_label,
+                source="sidecar task validation",
+            )
+        handoff_path = Path(str(row.get("handoffPath") or ""))
+        if handoff_path.exists():
+            add_visual_activity_event(
+                activity,
+                seen,
+                timestamp=datetime.fromtimestamp(handoff_path.stat().st_mtime).astimezone().isoformat(timespec="seconds"),
+                kind="handoff",
+                title="handoff updated",
+                detail=str(handoff_path),
+                task_id=task_id,
+                thread_label=thread_label,
+                source="sidecar handoff file",
+            )
+        updated_at = str(row.get("updatedAt") or "")
+        if updated_at:
+            add_visual_activity_event(
+                activity,
+                seen,
+                timestamp=updated_at,
+                kind="task-update",
+                title="task state updated",
+                detail=row.get("nextStep", "") or row.get("blocker", ""),
+                task_id=task_id,
+                thread_label=thread_label,
+                source="sidecar task state",
+            )
+    for task in archived_tasks:
+        add_visual_activity_event(
+            activity,
+            seen,
+            timestamp=str(task.get("archivedAt") or task.get("updatedAt") or ""),
+            kind="archive",
+            title="task archived",
+            detail=str(task.get("archiveReason") or task.get("status") or ""),
+            task_id=str(task.get("taskId") or ""),
+            thread_label=str(task.get("threadDisplayLabel") or task.get("threadLabel") or task.get("threadRole") or ""),
+            source="sidecar archive",
+        )
+    activity.sort(key=lambda item: str(item.get("timestamp") or ""), reverse=True)
+    return activity[:limit]
 
 
 def build_visual_project_payload(manager: SidecarManager, include_archive: bool, language: str) -> dict[str, Any]:
@@ -3485,6 +4114,7 @@ def build_visual_project_payload(manager: SidecarManager, include_archive: bool,
                 "worktreePath": row.get("worktreePath", ""),
                 "environmentType": row.get("environmentType", "") or ("worktree" if row.get("worktreePath") else "project-level"),
                 "threadId": row.get("threadId", ""),
+                "codexThreadId": row.get("codexThreadId", ""),
                 "threadRole": row.get("threadRole", "primary-execution"),
                 "threadLabel": row.get("threadLabel", ""),
                 "threadDisplayLabel": row.get("threadDisplayLabel", "") or row.get("threadLabel", "") or row.get("threadRole", ""),
@@ -3499,7 +4129,9 @@ def build_visual_project_payload(manager: SidecarManager, include_archive: bool,
                 "taskStatus": row.get("taskStatus", ""),
                 "health": row.get("health", "attention"),
                 "handoffAvailable": bool(row.get("handoffAvailable")),
+                "handoffPath": row.get("handoffPath", ""),
                 "validationPresent": bool(row.get("validationPresent")),
+                "validationAt": (row.get("validation") or {}).get("validatedAt", "") if isinstance(row.get("validation"), dict) else "",
                 "safetyRulesPresent": bool(row.get("safetyRulesPresent")),
                 "dirty": bool(row.get("dirty")),
                 "stale": bool(row.get("stale")),
@@ -3508,6 +4140,7 @@ def build_visual_project_payload(manager: SidecarManager, include_archive: bool,
                 "recommendedActionType": row.get("recommendedActionType", ""),
                 "aliases": row.get("aliases", []),
                 "nextStep": row.get("nextStep", ""),
+                "updatedAt": row.get("updatedAt", ""),
                 "sidecarHit": bool(row.get("sidecarHit")),
                 "archived": False,
             }
@@ -3637,11 +4270,29 @@ def build_visual_project_payload(manager: SidecarManager, include_archive: bool,
         warnings.append(f"Git worktree inventory error: {short_text(worktree_error, max_len=200)}")
     if errors:
         warnings.append(f"{len(errors)} worktree audit error(s) were omitted from the graph.")
+    thread_discovery_audit = read_codex_thread_audit(manager)
+    thread_discovery_summary = thread_discovery_audit.get("summary", {}) if isinstance(thread_discovery_audit, dict) else {}
+    thread_discovery_attention = sum(
+        int(thread_discovery_summary.get(key) or 0)
+        for key in ["unregistered", "registeredButNotSeen", "staleRegistered"]
+    )
+    if thread_discovery_attention:
+        warnings.append(f"{thread_discovery_attention} Codex thread discovery audit item(s) need registration refresh or review.")
+    summary_counts["threadDiscoveryAttention"] = thread_discovery_attention
 
     return {
         "projectId": manager.project_id,
         "generatedAt": now_iso(),
         "language": normalize_language(language),
+        "graphModel": {
+            "projectRole": "page-context",
+            "mainChain": ["task", "thread", "environment"],
+            "environmentOptional": True,
+            "ownershipNotes": [
+                "Project is page/report context, not an ownership node.",
+                "Environment is a thread-used resource and may be absent for project-level threads.",
+            ],
+        },
         "sidecarRoot": str(manager.sidecar_root),
         "canonicalRepoRoot": str(manager.git.repo_root),
         "baseBranch": manager.git.base_branch,
@@ -3659,6 +4310,8 @@ def build_visual_project_payload(manager: SidecarManager, include_archive: bool,
         "taskRows": task_rows,
         "legend": visual_legend(language),
         "needsAttention": needs_attention,
+        "threadDiscoveryAudit": thread_discovery_audit,
+        "activityEvents": build_visual_activity_events(manager, task_rows, archived_tasks),
         "archiveSummary": archive_summary,
         "recommendedActions": recommended_actions,
         "cleanupPrompts": cleanup_prompts,
@@ -3749,6 +4402,20 @@ def build_visual_project_markdown(report: dict[str, Any]) -> str:
             lines.append(f"- `{label or 'unknown'}`: {item.get('health')} - {item.get('reason') or visual_text(language, 'needs_review')}")
     else:
         lines.append(f"- {visual_text(language, 'none')}")
+    thread_audit = report.get("threadDiscoveryAudit") or {}
+    thread_summary = thread_audit.get("summary", {}) if isinstance(thread_audit, dict) else {}
+    thread_attention = sum(int(thread_summary.get(key) or 0) for key in ["unregistered", "registeredButNotSeen", "staleRegistered"])
+    lines.extend(["", "## Codex Thread Discovery Audit"])
+    if thread_attention:
+        lines.append(f"- attention: {thread_attention}")
+        for item in (thread_audit.get("unregisteredCodexThreads") or [])[:5]:
+            lines.append(f"- unregistered `{item.get('codexThreadId', '')}`: {markdown_cell(item.get('cwd', ''))}")
+        for item in (thread_audit.get("staleRegisteredThreads") or [])[:5]:
+            lines.append(f"- stale `{item.get('codexThreadId', '')}`: {markdown_cell(item.get('taskId', ''))}")
+        for item in (thread_audit.get("registeredButNotSeen") or [])[:5]:
+            lines.append(f"- not seen `{item.get('codexThreadId', '')}`: {markdown_cell(item.get('taskId', ''))}")
+    else:
+        lines.append("- none")
     archive = report.get("archiveSummary", {})
     lines.extend(
         [
@@ -6583,6 +7250,172 @@ def cmd_project_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_scan_codex_threads(args: argparse.Namespace) -> int:
+    manager = make_manager(args)
+    payload = build_thread_reconcile_payload(
+        manager,
+        include_archived=bool(getattr(args, "include_archived", False)),
+        include_title=bool(getattr(args, "include_title", False)),
+        limit=max(1, int(getattr(args, "limit", 50) or 50)),
+    )
+    payload["action"] = "scan-codex-threads"
+    payload["sidecarMutated"] = False
+    payload["auditPath"] = ""
+    payload["refreshRequests"] = []
+    if isinstance(payload.get("summary"), dict):
+        payload["summary"]["refreshRequests"] = 0
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_reconcile_threads(args: argparse.Namespace) -> int:
+    started_at = time.perf_counter()
+    manager = make_manager(args)
+    payload = build_thread_reconcile_payload(
+        manager,
+        include_archived=bool(getattr(args, "include_archived", False)),
+        include_title=bool(getattr(args, "include_title", False)),
+        limit=max(1, int(getattr(args, "limit", 50) or 50)),
+    )
+    audit_path = codex_thread_audit_path(manager)
+    sidecar_mutated = not bool(getattr(args, "no_write_cache", False))
+    if sidecar_mutated:
+        manager.ensure_layout()
+        write_json(
+            audit_path,
+            {
+                "version": SIDECAR_VERSION,
+                "projectId": manager.project_id,
+                "generatedAt": payload.get("generatedAt", ""),
+                "provider": payload.get("provider", ""),
+                "summary": payload.get("summary", {}),
+                "unregisteredCodexThreads": payload.get("unregisteredCodexThreads", []),
+                "registeredButNotSeen": payload.get("registeredButNotSeen", []),
+                "staleRegisteredThreads": payload.get("staleRegisteredThreads", []),
+                "refreshRequests": payload.get("refreshRequests", []),
+                "spawnEdgesObserved": payload.get("spawnEdgesObserved", []),
+                "warnings": payload.get("warnings", []),
+            },
+        )
+    manager.log_event(
+        "reconcile-threads",
+        started_at=started_at,
+        sidecar_mutated=sidecar_mutated,
+        provider=payload.get("provider", ""),
+        unregistered=payload.get("summary", {}).get("unregistered", 0),
+        staleRegistered=payload.get("summary", {}).get("staleRegistered", 0),
+        registeredButNotSeen=payload.get("summary", {}).get("registeredButNotSeen", 0),
+    )
+    payload["action"] = "reconcile-threads"
+    payload["sidecarMutated"] = sidecar_mutated
+    payload["auditPath"] = str(audit_path) if sidecar_mutated else ""
+    payload["agentActionHint"] = (
+        "If Codex send_message_to_thread is available, send each refreshRequests[].prompt to refreshRequests[].codexThreadId. "
+        "If not available, show refreshRequests as manual prompts. Do not read full thread history."
+    )
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def find_task_by_codex_thread_id(payload: dict[str, Any], codex_thread_id: str) -> dict[str, Any] | None:
+    if not codex_thread_id:
+        return None
+    for task in payload.get("tasks", []):
+        if not isinstance(task, dict):
+            continue
+        for thread in ensure_task_threads(task, mutate=False):
+            if str(thread.get("codexThreadId") or "") == codex_thread_id:
+                return task
+    return None
+
+
+def cmd_refresh_thread_registration(args: argparse.Namespace) -> int:
+    started_at = time.perf_counter()
+    manager = make_manager(args)
+    if not manager.git.is_git_worktree and not allow_non_git_worktree(args):
+        print(json.dumps(guarded_non_git_write_response(manager, "refresh-thread-registration"), ensure_ascii=False, indent=2))
+        return 0
+    codex_thread_id = short_text(str(getattr(args, "codex_thread_id", "") or ""), max_len=80)
+    payload = manager.load_active_tasks()
+    task = task_by_id(manager, payload, slugify(args.task_id)) if getattr(args, "task_id", None) else None
+    if task is None and codex_thread_id:
+        task = find_task_by_codex_thread_id(payload, codex_thread_id)
+    conflicts: list[str] = []
+    if task is None and not getattr(args, "task_id", None):
+        task, conflicts = manager.find_task(payload)
+    if task is None and not getattr(args, "task_id", None):
+        print(
+            json.dumps(
+                {
+                    "projectId": manager.project_id,
+                    "action": "refresh-thread-registration",
+                    "sidecarMutated": False,
+                    "needsRouteConfirmation": True,
+                    "codexThreadId": codex_thread_id,
+                    "message": "No safe sidecar task route was found. Rerun with --task-id plus --thread-role/--thread-label.",
+                    "repoMutated": False,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+    args.registration_source = "refresh-thread-registration"
+    args.project_level_orientation = getattr(args, "scope", "") == "project-level"
+    if not getattr(args, "thread_role", None) and task:
+        args.thread_role = task.get("threadRole", "") or "primary-execution"
+    if getattr(args, "thread_label", None) is None and task:
+        args.thread_label = task.get("threadLabel", "")
+    if getattr(args, "thread_purpose", None) is None and task:
+        args.thread_purpose = task.get("threadPurpose", "")
+    route = route_result(
+        "confirmed" if getattr(args, "task_id", None) or task else "inferred",
+        routingNeedsReview=False,
+        routingConfidence=1.0 if getattr(args, "task_id", None) else 0.75,
+        routingEvidence=unique_normalized_nonempty(
+            [
+                "refresh-thread-registration invoked by current thread",
+                "explicit --task-id" if getattr(args, "task_id", None) else "matched current worktree or existing codexThreadId",
+            ],
+            limit=10,
+        ),
+        routingCandidates=[],
+    )
+    task = manager.upsert_task(payload, task, args, route=route)
+    current_thread = upsert_current_thread(task, args)
+    manager.save_active_tasks(payload)
+    manager.log_event(
+        "refresh-thread-registration",
+        task_id=task.get("taskId", ""),
+        started_at=started_at,
+        sidecar_mutated=True,
+        codexThreadId=codex_thread_id,
+        threadRole=current_thread.get("threadRole", ""),
+    )
+    print(
+        json.dumps(
+            {
+                "projectId": manager.project_id,
+                "action": "refresh-thread-registration",
+                "sidecarMutated": True,
+                "taskId": task.get("taskId", ""),
+                "threadId": current_thread.get("threadId", ""),
+                "codexThreadId": current_thread.get("codexThreadId", ""),
+                "threadRole": current_thread.get("threadRole", ""),
+                "threadLabel": current_thread.get("threadLabel", ""),
+                "scope": getattr(args, "scope", ""),
+                "threads": compact_thread_entries(ensure_task_threads(task, mutate=False)),
+                "conflicts": conflicts,
+                "activeTasksPath": str(manager.active_tasks_path),
+                "repoMutated": False,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0
+
+
 def cmd_weekly_report(args: argparse.Namespace) -> int:
     started_at = time.perf_counter()
     manager = make_manager(args)
@@ -6665,6 +7498,16 @@ def cmd_eval_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def open_dashboard_file(path: Path) -> bool:
+    try:
+        if sys.platform.startswith("win") and hasattr(os, "startfile"):
+            os.startfile(str(path))  # type: ignore[attr-defined]
+            return True
+        return bool(webbrowser.open(path.resolve().as_uri()))
+    except Exception:
+        return False
+
+
 def cmd_visualize_project(args: argparse.Namespace) -> int:
     from project_hub_dashboard import build_visual_project_html
 
@@ -6695,6 +7538,7 @@ def cmd_visualize_project(args: argparse.Namespace) -> int:
         atomic_write_text(markdown_path, build_visual_project_markdown(report))
     with file_lock(html_path):
         atomic_write_text(html_path, build_visual_project_html(report))
+    dashboard_opened = open_dashboard_file(html_path) if bool(getattr(args, "open_dashboard", False)) else False
     manager.log_event(
         "visualize-project",
         started_at=started_at,
@@ -6704,6 +7548,7 @@ def cmd_visualize_project(args: argparse.Namespace) -> int:
         reportMarkdownPath=str(markdown_path),
         reportJsonPath=str(json_path),
         reportHtmlPath=str(html_path),
+        dashboardOpened=dashboard_opened,
         visibleTasks=report.get("summaryCounts", {}).get("visibleTasks", 0),
         needsAttentionCount=len(report.get("needsAttention", [])),
     )
@@ -6713,6 +7558,7 @@ def cmd_visualize_project(args: argparse.Namespace) -> int:
                 "projectId": manager.project_id,
                 "dashboardPath": report["dashboardPath"],
                 "dashboardUrl": report["dashboardUrl"],
+                "dashboardOpened": dashboard_opened,
                 "reportPaths": report["reportPaths"],
                 "summaryCounts": report.get("summaryCounts", {}),
                 "needsAttentionCount": len(report.get("needsAttention", [])),
@@ -6908,6 +7754,7 @@ def build_parser() -> argparse.ArgumentParser:
         subparser.add_argument("--parent-task-id")
         subparser.add_argument("--phase")
         subparser.add_argument("--thread-id")
+        subparser.add_argument("--codex-thread-id")
         subparser.add_argument("--thread-role")
         subparser.add_argument("--thread-label")
         subparser.add_argument("--thread-purpose")
@@ -6985,6 +7832,7 @@ def build_parser() -> argparse.ArgumentParser:
     orient_parser.add_argument("--parent-task-id", help="Optional parent task id for attach mode.")
     orient_parser.add_argument("--phase", help="Optional task phase for attach mode.")
     orient_parser.add_argument("--thread-id", help="Optional internal thread id to update in attach mode.")
+    orient_parser.add_argument("--codex-thread-id", help="Optional Codex app/local thread id to persist in sidecar.")
     orient_parser.add_argument("--thread-label", help="Optional human label for this thread.")
     orient_parser.add_argument("--thread-purpose", help="Optional concise purpose for this thread.")
     orient_parser.add_argument("--attach", action="store_true", help="Write thread metadata to sidecar when the route is safe or confirmed.")
@@ -7082,6 +7930,28 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(project_status_parser)
     project_status_parser.set_defaults(func=cmd_project_status)
 
+    scan_codex_threads_parser = subparsers.add_parser("scan-codex-threads", help="Read local Codex thread metadata and report sidecar mismatches without writing sidecar state")
+    add_common(scan_codex_threads_parser)
+    scan_codex_threads_parser.add_argument("--include-archived", action="store_true", help="Include archived Codex threads in the discovery scan.")
+    scan_codex_threads_parser.add_argument("--include-title", action="store_true", help="Include Codex thread title metadata. Preview and message content are never returned.")
+    scan_codex_threads_parser.add_argument("--limit", type=int, default=50, help="Maximum mismatch items to return per category.")
+    scan_codex_threads_parser.set_defaults(func=cmd_scan_codex_threads)
+
+    reconcile_threads_parser = subparsers.add_parser("reconcile-threads", help="Compare local Codex thread metadata with sidecar threads and cache mismatch audit state")
+    add_common(reconcile_threads_parser)
+    reconcile_threads_parser.add_argument("--include-archived", action="store_true", help="Include archived Codex threads in the discovery scan.")
+    reconcile_threads_parser.add_argument("--include-title", action="store_true", help="Include Codex thread title metadata. Preview and message content are never returned.")
+    reconcile_threads_parser.add_argument("--limit", type=int, default=50, help="Maximum mismatch items to return per category.")
+    reconcile_threads_parser.add_argument("--no-write-cache", action="store_true", help="Do not write the latest thread discovery audit cache.")
+    reconcile_threads_parser.set_defaults(func=cmd_reconcile_threads)
+
+    refresh_thread_parser = subparsers.add_parser("refresh-thread-registration", help="Refresh this thread's sidecar registration using an explicit Codex thread id")
+    add_common(refresh_thread_parser)
+    add_task_update_args(refresh_thread_parser)
+    refresh_thread_parser.add_argument("--scope", choices=["project-level", "task-level", "worktree-level"], default="task-level", help="Thread registration scope.")
+    refresh_thread_parser.add_argument("--codex-updated-at", help="Optional Codex thread updatedAt timestamp from a reconcile request.")
+    refresh_thread_parser.set_defaults(func=cmd_refresh_thread_registration)
+
     weekly_report_parser = subparsers.add_parser("weekly-report", help="Write a human-facing Markdown report into the sidecar")
     add_common(weekly_report_parser)
     weekly_report_parser.add_argument("--period", help="Report period label. Defaults to ISO week.")
@@ -7097,6 +7967,7 @@ def build_parser() -> argparse.ArgumentParser:
     visualize_project_parser = subparsers.add_parser("visualize-project", help="Write project visualization Markdown and JSON reports")
     add_common(visualize_project_parser)
     visualize_project_parser.add_argument("--include-archive", action="store_true", help="Include archived tasks in the visualization.")
+    visualize_project_parser.add_argument("--open-dashboard", action="store_true", help="Open the generated HTML dashboard for interactive use.")
     visualize_project_parser.set_defaults(func=cmd_visualize_project)
 
     draft_issue_parser = subparsers.add_parser("draft-issue", help="Generate a dogfood issue draft without requiring gh")

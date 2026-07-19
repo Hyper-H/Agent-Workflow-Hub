@@ -915,16 +915,20 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
     <div class="shell">
       <header class="topbar">
         <div>
-          <p class="eyebrow">Project Hub / V3.4 Static Dashboard</p>
+          <p id="dashboardEyebrow" class="eyebrow">Project Hub / V3.4 Static Dashboard</p>
           <h1 id="projectTitle"></h1>
           <p id="projectSubtitle" class="subtitle"></p>
         </div>
         <div class="toolbar">
           <input id="search" class="search" type="search" placeholder="筛选 taskId / branch / environment / thread role / status" aria-label="筛选项目关系">
           <div class="mode-switch" aria-label="视图切换">
-            <button id="mapMode" class="active" type="button">关系图</button>
-            <button id="matrixMode" type="button">矩阵检查</button>
-            <button id="timelineMode" type="button">时间线</button>
+            <button id="mapMode" class="active" type="button">关系图 / Map</button>
+            <button id="matrixMode" type="button">矩阵 / Matrix</button>
+            <button id="timelineMode" type="button">时间线 / Activity</button>
+          </div>
+          <div class="mode-switch" aria-label="Language">
+            <button id="zhMode" class="active" type="button">中文</button>
+            <button id="enMode" type="button">English</button>
           </div>
         </div>
       </header>
@@ -936,10 +940,10 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
           <section class="panel" aria-labelledby="mapTitle">
             <div class="panel-head">
               <div>
-                <p class="eyebrow">Relationship Map</p>
+                <p id="mapEyebrow" class="eyebrow">关系图 / Map</p>
                 <h2 id="mapTitle">Task -> Thread -> Environment</h2>
               </div>
-              <span class="chip">Project 是页面上下文，dependency 不进入 ownership 图</span>
+              <span id="mapNote" class="chip">Project 是页面上下文，dependency 不进入 ownership 图</span>
             </div>
             <div id="mapView" class="map-wrap">
               <div id="contextBand" class="context-band"></div>
@@ -947,15 +951,15 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
                 <svg id="mapSvg" class="map-svg" aria-hidden="true"></svg>
                 <div class="map-lanes">
                   <div class="lane">
-                    <div class="lane-title"><span>Task</span><span id="taskCount"></span></div>
+                    <div class="lane-title"><span id="taskLaneTitle">Task</span><span id="taskCount"></span></div>
                     <div id="taskLane" class="node-stack"></div>
                   </div>
                   <div class="lane">
-                    <div class="lane-title"><span>Thread</span><span id="threadCount"></span></div>
+                    <div class="lane-title"><span id="threadLaneTitle">Thread</span><span id="threadCount"></span></div>
                     <div id="threadLane" class="node-stack"></div>
                   </div>
                   <div class="lane">
-                    <div class="lane-title"><span>Environment</span><span id="worktreeCount"></span></div>
+                    <div class="lane-title"><span id="environmentLaneTitle">Environment</span><span id="worktreeCount"></span></div>
                     <div id="worktreeLane" class="node-stack"></div>
                   </div>
                 </div>
@@ -969,8 +973,18 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
           <section class="panel" aria-labelledby="secondaryTitle">
             <div class="panel-head">
               <div>
-                <p class="eyebrow">Secondary Dependency / Routing Evidence</p>
-                <h2 id="secondaryTitle">辅助关系，不作为 ownership</h2>
+                <p id="needsEyebrow" class="eyebrow">Needs Attention / 待处理</p>
+                <h2 id="needsTitle">需要处理的事项</h2>
+              </div>
+            </div>
+            <div id="needsList" class="secondary-list"></div>
+          </section>
+
+          <section class="panel" aria-labelledby="secondaryTitle">
+            <div class="panel-head">
+              <div>
+                <p id="routingEyebrow" class="eyebrow">Routing Notes / 路由说明</p>
+                <h2 id="secondaryTitle">辅助判断，不作为 ownership</h2>
               </div>
             </div>
             <div id="secondaryList" class="secondary-list"></div>
@@ -981,8 +995,8 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
           <section class="panel">
             <div class="panel-head">
               <div>
-                <p class="eyebrow">Detail / Evidence</p>
-                <h2 class="detail-title">选中路线</h2>
+                <p id="detailEyebrow" class="eyebrow">Detail / Evidence</p>
+                <h2 id="detailTitle" class="detail-title">选中路线</h2>
               </div>
               <span id="detailStatus" class="status-pill"></span>
             </div>
@@ -992,8 +1006,18 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
           <section class="panel">
             <div class="panel-head">
               <div>
-                <p class="eyebrow">Audit / Routing</p>
-                <h2 class="detail-title">th-project-hub 入口</h2>
+                <p id="legendEyebrow" class="eyebrow">Health Legend / 状态图例</p>
+                <h2 id="legendTitle" class="detail-title">状态含义</h2>
+              </div>
+            </div>
+            <div id="legendBody" class="action-body"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p id="actionEyebrow" class="eyebrow">Sidecar Actions / 操作</p>
+                <h2 id="actionTitle" class="detail-title">可复制动作</h2>
               </div>
             </div>
             <div id="actionBody" class="action-body"></div>
@@ -1012,6 +1036,7 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
     const recommendedActions = payload.recommendedActions || [];
     const cleanupPrompts = payload.cleanupPrompts || [];
     const needsAttention = payload.needsAttention || [];
+    const threadDiscoveryAudit = payload.threadDiscoveryAudit || {};
     const warnings = payload.warnings || [];
     const activeRows = rows.filter((row) => !row.archived);
 
@@ -1019,8 +1044,124 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
       selectedKey: "",
       selectedType: "task",
       mode: "map",
-      query: ""
+      query: "",
+      lang: (payload.language || "zh-CN").startsWith("zh") ? "zh-CN" : "en"
     };
+
+    const i18n = {
+      "zh-CN": {
+        dashboardEyebrow: "Project Hub / V3.4 静态 Dashboard",
+        searchPlaceholder: "筛选 taskId / branch / environment / threadRole / status",
+        mapTab: "关系图 / Map",
+        matrixTab: "矩阵 / Matrix",
+        timelineTab: "时间线 / Activity",
+        mapEyebrow: "关系图 / Map",
+        mapNote: "Project 是页面上下文，dependency 不进入 ownership 图",
+        needsEyebrow: "Needs Attention / 待处理",
+        needsTitle: "需要处理的事项",
+        routingEyebrow: "Routing Notes / 路由说明",
+        routingTitle: "辅助判断，不作为 ownership",
+        detailEyebrow: "Detail / Evidence",
+        detailTitle: "选中路线",
+        legendEyebrow: "Health Legend / 状态图例",
+        legendTitle: "状态含义",
+        actionEyebrow: "Sidecar Actions / 操作",
+        actionTitle: "可复制动作",
+        summaryText: "Project 是页面上下文。主关系固定为 Task -> Thread -> Environment(optional)；状态、risk、nextStep、validation、handoff 在详情和矩阵中呈现。",
+        baseBranch: "Base branch",
+        generated: "Generated",
+        tasks: "Tasks",
+        threads: "Threads",
+        environments: "Environments",
+        archive: "Archive",
+        blocked: "blocked",
+        auditErrors: "worktree audit errors",
+        discoveryItems: "discovery audit items",
+        hiddenByDefault: "hidden by default",
+        projectContext: "Project context",
+        contextText: "当前视图不把 Project 画成地图节点。Archived 默认隐藏",
+        contextHub: "th-project-hub 保留在 audit / routing 区域",
+        routeRows: "route rows",
+        none: "none",
+        projectLevelNone: "project-level / none",
+        taskRoute: "task route",
+        taskRoutes: "task routes",
+        whyStatus: "为什么是这个状态",
+        machineFields: "route fields",
+        nodeDetail: "详情承载状态证据，不把 risk / validation / handoff 画成主图节点。",
+        recommendedAction: "recommended action",
+        noSelection: "没有选中项。",
+        noActivity: "暂无足够活动记录",
+        noActivityDetail: "payload 中没有足够的 sidecar event、handoff、validation 或 archive 时间。",
+        noRouting: "暂无路由说明。主图只表达 Task -> Thread -> Environment(optional)。",
+        noNeeds: "暂无需要处理的事项。",
+        promptSource: "source: sidecar action",
+        copy: "Copy",
+        copied: "copied",
+        copyBlocked: "复制被浏览器阻止，请手动选择文本",
+        warnings: "warnings",
+        noActions: "没有 payload 提供的可复制 prompt。",
+        sidecarOnly: "只显示 sidecar payload 已提供的 action prompt。"
+      },
+      en: {
+        dashboardEyebrow: "Project Hub / V3.4 Static Dashboard",
+        searchPlaceholder: "Filter taskId / branch / environment / threadRole / status",
+        mapTab: "关系图 / Map",
+        matrixTab: "矩阵 / Matrix",
+        timelineTab: "时间线 / Activity",
+        mapEyebrow: "关系图 / Map",
+        mapNote: "Project is page context; dependencies stay outside the ownership graph",
+        needsEyebrow: "Needs Attention / 待处理",
+        needsTitle: "Items to handle",
+        routingEyebrow: "Routing Notes / 路由说明",
+        routingTitle: "Supporting evidence, not ownership",
+        detailEyebrow: "Detail / Evidence",
+        detailTitle: "Selected route",
+        legendEyebrow: "Health Legend / 状态图例",
+        legendTitle: "Status meaning",
+        actionEyebrow: "Sidecar Actions / 操作",
+        actionTitle: "Copyable actions",
+        summaryText: "Project is page context. The main chain is Task -> Thread -> Environment(optional); status, risk, nextStep, validation, and handoff live in details and matrix.",
+        baseBranch: "Base branch",
+        generated: "Generated",
+        tasks: "Tasks",
+        threads: "Threads",
+        environments: "Environments",
+        archive: "Archive",
+        blocked: "blocked",
+        auditErrors: "worktree audit errors",
+        discoveryItems: "discovery audit items",
+        hiddenByDefault: "hidden by default",
+        projectContext: "Project context",
+        contextText: "Project is not drawn as a map node. Archived tasks are hidden by default",
+        contextHub: "th-project-hub stays in audit / routing areas",
+        routeRows: "route rows",
+        none: "none",
+        projectLevelNone: "project-level / none",
+        taskRoute: "task route",
+        taskRoutes: "task routes",
+        whyStatus: "Why this status",
+        machineFields: "route fields",
+        nodeDetail: "Details carry evidence; risk / validation / handoff are not graph nodes.",
+        recommendedAction: "recommended action",
+        noSelection: "No selection.",
+        noActivity: "No activity records yet",
+        noActivityDetail: "The payload does not have enough sidecar event, handoff, validation, or archive timestamps.",
+        noRouting: "No routing notes. The main graph only expresses Task -> Thread -> Environment(optional).",
+        noNeeds: "No needs-attention items.",
+        promptSource: "source: sidecar action",
+        copy: "Copy",
+        copied: "copied",
+        copyBlocked: "Clipboard access was blocked; select the text manually.",
+        warnings: "warnings",
+        noActions: "No copyable prompt was provided by the payload.",
+        sidecarOnly: "Only action prompts already provided by the sidecar payload are shown."
+      }
+    };
+
+    function t(key) {
+      return (i18n[state.lang] && i18n[state.lang][key]) || i18n.en[key] || key;
+    }
 
     const graph = buildGraph(activeRows);
     state.selectedKey = graph.tasks[0]?.key || graph.threads[0]?.key || graph.worktrees[0]?.key || "";
@@ -1177,30 +1318,54 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
         <article class="summary">
           <div>
             <h2>${escapeHtml(payload.projectId || "project")}</h2>
-            <p>Project 是页面上下文。主关系固定为 <strong>Task -> Thread -> Environment(optional)</strong>；risk / nextStep / validation / handoff 只在详情和矩阵中呈现。</p>
+            <p>${escapeHtml(t("summaryText"))}</p>
           </div>
           <span class="status-pill ${statusClass(projectHealth)}">${escapeHtml(projectHealth)}</span>
         </article>
-        <article class="metric"><span>Tasks</span><b>${summaryCounts.visibleTasks || graph.tasks.length}</b><span>${summaryCounts.blocked || 0} blocked</span></article>
-        <article class="metric"><span>Environments</span><b>${summaryCounts.visibleEnvironments || graph.worktrees.length}</b><span>${summaryCounts.worktreeAuditErrors || 0} worktree audit errors</span></article>
-        <article class="metric"><span>Threads</span><b>${summaryCounts.visibleThreads || graph.threads.length}</b><span>recorded thread surfaces</span></article>
-        <article class="metric"><span>Archive</span><b>${archiveSummary.archivedHidden || 0}</b><span>hidden by default</span></article>
+        <article class="metric"><span>${escapeHtml(t("tasks"))}</span><b>${summaryCounts.visibleTasks || graph.tasks.length}</b><span>${summaryCounts.blocked || 0} ${escapeHtml(t("blocked"))}</span></article>
+        <article class="metric"><span>${escapeHtml(t("environments"))}</span><b>${summaryCounts.visibleEnvironments || graph.worktrees.length}</b><span>${summaryCounts.worktreeAuditErrors || 0} ${escapeHtml(t("auditErrors"))}</span></article>
+        <article class="metric"><span>${escapeHtml(t("threads"))}</span><b>${summaryCounts.visibleThreads || graph.threads.length}</b><span>${summaryCounts.threadDiscoveryAttention || 0} ${escapeHtml(t("discoveryItems"))}</span></article>
+        <article class="metric"><span>${escapeHtml(t("archive"))}</span><b>${archiveSummary.archivedHidden || 0}</b><span>${escapeHtml(t("hiddenByDefault"))}</span></article>
       `;
     }
 
     function renderChrome() {
+      document.documentElement.lang = state.lang;
       document.getElementById("projectTitle").textContent = payload.projectId || "Agent Workflow Hub";
-      document.getElementById("projectSubtitle").textContent = `Base branch: ${payload.baseBranch || "unknown"}. Generated: ${payload.generatedAt || "unknown"}. HTML dashboard is generated from visualize-project payload.`;
+      document.getElementById("projectSubtitle").textContent = `${t("baseBranch")}: ${payload.baseBranch || "unknown"}. ${t("generated")}: ${payload.generatedAt || "unknown"}.`;
+      document.getElementById("dashboardEyebrow").textContent = t("dashboardEyebrow");
+      document.getElementById("search").placeholder = t("searchPlaceholder");
+      document.getElementById("search").setAttribute("aria-label", t("searchPlaceholder"));
+      document.getElementById("mapMode").textContent = t("mapTab");
+      document.getElementById("matrixMode").textContent = t("matrixTab");
+      document.getElementById("timelineMode").textContent = t("timelineTab");
+      document.getElementById("zhMode").classList.toggle("active", state.lang === "zh-CN");
+      document.getElementById("enMode").classList.toggle("active", state.lang === "en");
+      document.getElementById("mapEyebrow").textContent = t("mapEyebrow");
+      document.getElementById("mapNote").textContent = t("mapNote");
+      document.getElementById("taskLaneTitle").textContent = "Task";
+      document.getElementById("threadLaneTitle").textContent = "Thread";
+      document.getElementById("environmentLaneTitle").textContent = "Environment";
+      document.getElementById("needsEyebrow").textContent = t("needsEyebrow");
+      document.getElementById("needsTitle").textContent = t("needsTitle");
+      document.getElementById("routingEyebrow").textContent = t("routingEyebrow");
+      document.getElementById("secondaryTitle").textContent = t("routingTitle");
+      document.getElementById("detailEyebrow").textContent = t("detailEyebrow");
+      document.getElementById("detailTitle").textContent = t("detailTitle");
+      document.getElementById("legendEyebrow").textContent = t("legendEyebrow");
+      document.getElementById("legendTitle").textContent = t("legendTitle");
+      document.getElementById("actionEyebrow").textContent = t("actionEyebrow");
+      document.getElementById("actionTitle").textContent = t("actionTitle");
     }
 
     function renderContextBand() {
       const hidden = archiveSummary.archivedHidden || 0;
       document.getElementById("contextBand").innerHTML = `
         <div>
-          <b>${escapeHtml(payload.projectId || "Project")} / Project context</b>
-          <span>当前视图不把 Project 画成地图节点。Archived 默认隐藏${hidden ? `，隐藏数量 ${hidden}` : ""}。</span>
+          <b>${escapeHtml(payload.projectId || "Project")} / ${escapeHtml(t("projectContext"))}</b>
+          <span>${escapeHtml(t("contextText"))}${hidden ? `: ${hidden}` : ""}.</span>
         </div>
-        <span class="chip">th-project-hub 在右侧 audit / routing 面板</span>
+        <span class="chip">${escapeHtml(t("contextHub"))}</span>
       `;
     }
 
@@ -1237,14 +1402,14 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
     function metaForNode(node) {
       if (node.type === "task") {
         const branches = unique(node.rows.map((row) => row.branch));
-        return branches.join(" / ") || `${node.rows.length} route rows`;
+        return branches.join(" / ") || `${node.rows.length} ${t("routeRows")}`;
       }
       if (node.type === "environment") {
         const path = node.rows[0]?.worktreePath || "";
-        return path || "project-level / none";
+        return path || t("projectLevelNone");
       }
       const tasks = unique(node.rows.map((row) => row.taskId));
-      return `${node.label} / ${tasks.length} task route${tasks.length === 1 ? "" : "s"}`;
+      return `${node.label} / ${tasks.length} ${tasks.length === 1 ? t("taskRoute") : t("taskRoutes")}`;
     }
 
     function chipsForNode(node) {
@@ -1292,15 +1457,15 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
       document.getElementById("mobileRoutes").innerHTML = graph.tasks.filter(matchesQuery).map((node) => {
         const selected = state.selectedKey === node.key;
         const dimmed = related.size > 1 && !related.has(node.key);
-        const worktrees = unique(node.rows.map((row) => row.worktreePath || "project-level / none")).map(shortPath).join(" / ");
+        const worktrees = unique(node.rows.map((row) => row.worktreePath || t("projectLevelNone"))).map(shortPath).join(" / ");
         const threads = unique(node.rows.map((row) => row.threadRole || "primary-execution")).join(" / ");
         const threadLabels = unique(node.rows.map(rowThreadLabel)).join(" / ");
         return `
           <button class="route-card ${selected ? "selected" : ""} ${dimmed ? "dimmed" : ""}" type="button" data-type="task" data-key="${escapeAttr(node.key)}">
             <span class="node-main"><b>${escapeHtml(node.label)}</b><span class="status-pill ${statusClass(healthForNode(node))}">${escapeHtml(healthForNode(node))}</span></span>
-            <span>thread label: ${escapeHtml(threadLabels || "none")}</span>
-            <span>thread role: ${escapeHtml(threads || "none")}</span>
-            <span>environment: ${escapeHtml(worktrees || "project-level / none")}</span>
+            <span>threadLabel: ${escapeHtml(threadLabels || t("none"))}</span>
+            <span>threadRole: ${escapeHtml(threads || t("none"))}</span>
+            <span>environment: ${escapeHtml(worktrees || t("projectLevelNone"))}</span>
           </button>
         `;
       }).join("");
@@ -1334,7 +1499,7 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
           <thead>
             <tr>
               <th>taskId</th>
-              ${threads.map((thread) => `<th>thread role<br>${escapeHtml(thread.label)}</th>`).join("")}
+              ${threads.map((thread) => `<th>threadRole<br>${escapeHtml(thread.label)}</th>`).join("")}
               ${worktrees.map((worktree) => `<th>environment<br>${escapeHtml(worktree.label)}</th>`).join("")}
             </tr>
           </thead>
@@ -1344,17 +1509,49 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
     }
 
     function renderTimeline() {
-      const items = [
-        { label: "Generated", title: payload.generatedAt || "unknown", detail: "visualize-project 生成 Markdown / JSON / HTML。timeline 是 secondary tab，不替代主关系图。" },
-        { label: "Attention", title: `${needsAttention.length} needs-attention item(s)`, detail: needsAttention.map((item) => item.taskId || item.branch || item.reason).filter(Boolean).slice(0, 5).join(" / ") || "none" },
-        { label: "Archive", title: `${archiveSummary.archivedHidden || 0} archived hidden`, detail: "archive 默认隐藏或折叠，只显示 count；传 includeArchive 时才进入 payload。" }
-      ];
+      const items = payload.activityEvents || [];
+      if (!items.length) {
+        document.getElementById("timelineView").innerHTML = `
+          <div class="timeline-list">
+            <div class="timeline-item">
+              <span class="chip">${escapeHtml(t("noActivity"))}</span>
+              <div><b>${escapeHtml(t("noActivity"))}</b><p>${escapeHtml(t("noActivityDetail"))}</p></div>
+            </div>
+          </div>
+        `;
+        return;
+      }
       document.getElementById("timelineView").innerHTML = `<div class="timeline-list">${items.map((item) => `
         <div class="timeline-item">
-          <span class="chip">${escapeHtml(item.label)}</span>
-          <div><b>${escapeHtml(item.title)}</b><p>${escapeHtml(item.detail)}</p></div>
+          <span class="chip">${escapeHtml(item.kind || "activity")}</span>
+          <div>
+            <b>${escapeHtml(item.timestamp || item.title || "activity")}</b>
+            <p>${escapeHtml([item.title, item.taskId, item.threadLabel, item.detail].filter(Boolean).join(" / "))}</p>
+          </div>
         </div>
       `).join("")}</div>`;
+    }
+
+    function actionPromptHtml(prompt, label) {
+      if (!prompt) return "";
+      return `
+        <div class="copy-row">
+          <div class="copy-value">${escapeHtml(t("promptSource"))}: ${escapeHtml(prompt)}</div>
+          <button class="btn" type="button" data-copy="${escapeAttr(prompt)}" data-label="${escapeAttr(label || t("promptSource"))}">${escapeHtml(t("copy"))}</button>
+        </div>
+      `;
+    }
+
+    function renderNeedsAttention() {
+      const items = needsAttention.slice(0, 12);
+      document.getElementById("needsList").innerHTML = items.length ? items.map((item) => `
+        <div class="secondary-item">
+          <span class="status-pill ${statusClass(item.health)}">${escapeHtml(item.health || "attention")}</span>
+          <b>${escapeHtml(item.taskId || item.branch || item.threadLabel || item.worktreePath || "needs attention")}</b>
+          <span>${escapeHtml(item.reason || "needs review")}</span>
+          <span>threadRole: ${escapeHtml(item.threadRole || t("none"))}; threadLabel: ${escapeHtml(item.threadLabel || t("none"))}; environment: ${escapeHtml(item.worktreePath || t("projectLevelNone"))}</span>
+        </div>
+      `).join("") : `<span class="chip">${escapeHtml(t("noNeeds"))}</span>`;
     }
 
     function renderSecondary() {
@@ -1372,28 +1569,40 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
         body: item.reason || "cleanup",
         prompt: item.prompt || ""
       }));
-      const attentionItems = needsAttention
-        .filter((item) => !actionItems.some((action) => action.title === item.taskId))
-        .map((item, index) => ({
-          id: `attention-${index}`,
-          title: item.taskId || item.branch || "needs attention",
-          status: item.health || "attention",
-          body: item.reason || "needs review",
+      const discoveryItems = [
+        ...(threadDiscoveryAudit.unregisteredCodexThreads || []).map((item, index) => ({
+          id: `thread-unregistered-${index}`,
+          title: item.codexThreadId || "unregistered Codex thread",
+          status: "attention",
+          body: item.reason || "seen in Codex storage but not registered in sidecar",
+          prompt: (threadDiscoveryAudit.refreshRequests || []).find((request) => request.codexThreadId === item.codexThreadId)?.prompt || ""
+        })),
+        ...(threadDiscoveryAudit.staleRegisteredThreads || []).map((item, index) => ({
+          id: `thread-stale-${index}`,
+          title: item.threadLabel || item.taskId || item.codexThreadId || "stale registered thread",
+          status: "attention",
+          body: item.reason || "Codex thread changed after sidecar registration",
+          prompt: (threadDiscoveryAudit.refreshRequests || []).find((request) => request.codexThreadId === item.codexThreadId)?.prompt || ""
+        })),
+        ...(threadDiscoveryAudit.registeredButNotSeen || []).map((item, index) => ({
+          id: `thread-not-seen-${index}`,
+          title: item.threadLabel || item.taskId || item.codexThreadId || "registered thread not seen",
+          status: "attention",
+          body: item.reason || "registered in sidecar but not seen in Codex storage",
           prompt: ""
-        }));
-      const items = [...actionItems, ...cleanupItems, ...attentionItems].slice(0, 8);
+        }))
+      ];
+      const items = [...discoveryItems, ...actionItems, ...cleanupItems].slice(0, 12);
       document.getElementById("secondaryList").innerHTML = items.length ? items.map((item) => `
-        <button class="secondary-item" type="button" data-prompt="${escapeAttr(item.prompt)}">
+        <div class="secondary-item">
           <span class="status-pill ${statusClass(item.status)}">${escapeHtml(item.status)}</span>
           <b>${escapeHtml(item.title)}</b>
-          <span>${escapeHtml(item.body)}。这是 dependency / routing evidence，不是 ownership 边。</span>
-        </button>
-      `).join("") : `<span class="chip">无辅助 dependency / routing action。主图仍只表达 Task -> Thread -> Environment(optional)。</span>`;
-      document.querySelectorAll(".secondary-item").forEach((item) => {
-        item.addEventListener("click", () => {
-          const prompt = item.dataset.prompt || "";
-          if (prompt) copyText(prompt, "Secondary prompt");
-        });
+          <span>${escapeHtml(item.body)}</span>
+          ${actionPromptHtml(item.prompt, item.title)}
+        </div>
+      `).join("") : `<span class="chip">${escapeHtml(t("noRouting"))}</span>`;
+      document.querySelectorAll("#secondaryList [data-copy]").forEach((button) => {
+        button.addEventListener("click", () => copyText(button.dataset.copy, button.dataset.label));
       });
     }
 
@@ -1422,7 +1631,7 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
           <h4>${escapeHtml(label)}</h4>
           <div class="copy-row">
             <div class="copy-value">${escapeHtml(value)}</div>
-            <button class="btn" type="button" data-copy="${escapeAttr(value)}" data-label="${escapeAttr(label)}">Copy</button>
+            <button class="btn" type="button" data-copy="${escapeAttr(value)}" data-label="${escapeAttr(label)}">${escapeHtml(t("copy"))}</button>
           </div>
         </div>
       `;
@@ -1432,6 +1641,21 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
       return value ? "true" : "false";
     }
 
+    function statusReasonsForRows(rows) {
+      const reasons = [];
+      if (rows.some((row) => row.taskStatus === "blocked")) reasons.push("taskStatus=blocked");
+      if (rows.some((row) => row.blocker)) reasons.push("blocker");
+      if (rows.some((row) => row.stale)) reasons.push("stale");
+      if (rows.some((row) => row.dirty)) reasons.push("dirty worktree");
+      if (rows.some((row) => !row.handoffAvailable)) reasons.push("missing handoff");
+      if (rows.some((row) => !row.validationPresent)) reasons.push("missing validation");
+      if (rows.some((row) => !row.safetyRulesPresent)) reasons.push("missing safety");
+      if (rows.some((row) => row.routingNeedsReview)) reasons.push("routing needs review");
+      if (rows.some((row) => row.recommendedAction)) reasons.push("recommended action");
+      if (!reasons.length) reasons.push("all required evidence is present");
+      return unique(reasons);
+    }
+
     function renderDetail() {
       const node = selectedNode();
       const health = healthForNode(node);
@@ -1439,13 +1663,14 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
       status.className = `status-pill ${statusClass(health)}`;
       status.textContent = health;
       if (!node) {
-        document.getElementById("detailBody").innerHTML = `<p class="subtitle">没有选中项。</p>`;
+        document.getElementById("detailBody").innerHTML = `<p class="subtitle">${escapeHtml(t("noSelection"))}</p>`;
         return;
       }
       const branches = unique(node.rows.map((row) => row.branch));
-      const worktreePaths = unique(node.rows.map((row) => row.worktreePath || "project-level / none"));
+      const worktreePaths = unique(node.rows.map((row) => row.worktreePath || t("projectLevelNone")));
       const threadRoles = unique(node.rows.map((row) => row.threadRole));
       const threadLabels = unique(node.rows.map((row) => row.threadLabel));
+      const threadDisplayLabels = unique(node.rows.map(rowThreadLabel));
       const nextSteps = unique(node.rows.map((row) => row.nextStep));
       const blockers = unique(node.rows.map((row) => row.blocker));
       const actions = unique(node.rows.map((row) => row.recommendedAction));
@@ -1454,18 +1679,19 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
       const handoff = node.rows.every((row) => row.handoffAvailable);
       const validation = node.rows.every((row) => row.validationPresent);
       const safety = node.rows.every((row) => row.safetyRulesPresent);
-      const prompt = buildPrompt(node);
       document.getElementById("detailBody").innerHTML = `
         <div class="detail-heading">
           <h3>${escapeHtml(node.label)}</h3>
-          <p>${escapeHtml(node.type)} selection. 详情承载 risk / nextStep / validation / handoff，不把这些状态画成主图节点。</p>
+          <p>${escapeHtml(node.type)} selection. ${escapeHtml(t("nodeDetail"))}</p>
         </div>
-        ${evidenceBlock("Machine Fields", fieldRows([
+        ${listBlock(t("whyStatus"), statusReasonsForRows(node.rows))}
+        ${evidenceBlock(t("machineFields"), fieldRows([
           ["taskId", unique(node.rows.map((row) => row.taskId)).join(" / ")],
           ["branch", branches.join(" / ")],
-          ["environment", worktreePaths.join(" / ")],
-          ["thread role", threadRoles.join(" / ")],
-          ["thread label", threadLabels.join(" / ")],
+          ["worktreePath", worktreePaths.join(" / ")],
+          ["threadRole", threadRoles.join(" / ")],
+          ["threadLabel", threadLabels.join(" / ") || threadDisplayLabels.join(" / ")],
+          ["codexThreadId", unique(node.rows.map((row) => row.codexThreadId)).join(" / ")],
           ["dirty/stale", `dirty=${boolText(dirty)}, stale=${boolText(stale)}`],
           ["handoff", boolText(handoff)],
           ["validation", boolText(validation)],
@@ -1473,38 +1699,55 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
         ]))}
         ${listBlock("nextStep", nextSteps)}
         ${listBlock("blocker", blockers)}
-        ${listBlock("recommended action", actions)}
-        ${copyBlock("Copy prompt", prompt)}
+        ${listBlock(t("recommendedAction"), actions)}
       `;
-      document.querySelectorAll("#detailBody [data-copy]").forEach((button) => {
-        button.addEventListener("click", () => copyText(button.dataset.copy, button.dataset.label));
-      });
     }
 
-    function buildPrompt(node) {
-      const first = node.rows[0] || {};
-      if (node.type === "task") {
-        return `Resume task ${first.taskId || node.label}. Check branches ${unique(node.rows.map((row) => row.branch)).join(", ") || "unknown"}, canonical thread roles ${unique(node.rows.map((row) => row.threadRole)).join(", ") || "none"}, and environments ${unique(node.rows.map((row) => row.worktreePath || "project-level / none")).join(", ")}. Preserve handoff, validation, and safetyRules before editing.`;
-      }
-      if (node.type === "environment") {
-        return `Audit environment ${first.worktreePath || node.label}. Check dirty=${Boolean(first.dirty)}, stale=${Boolean(first.stale)}, handoff, validation, safetyRules, nextStep, and blocker before resuming related tasks.`;
-      }
-      return `Resume canonical thread role ${first.threadRole || "primary-execution"}${first.threadLabel ? ` (${first.threadLabel})` : ""} for task ${first.taskId || "unknown"}. Report taskId, status, handoffPath, nextStep, blocker, validation, and risks back to th-project-hub.`;
+    function renderLegend() {
+      const legend = payload.legend || {};
+      const fallback = {
+        healthy: "handoff, validation, safety rules, clean worktree, current snapshot, and no blocker",
+        attention: "dirty worktree, routing review, missing alias, or recommended action",
+        blocked: "blocked status, blocker, stale snapshot, or missing handoff/validation/safety rules",
+        archived: "archived sidecar task"
+      };
+      const items = ["healthy", "attention", "blocked", "archived"].map((key) => ({
+        key,
+        text: legend[key] || fallback[key]
+      }));
+      document.getElementById("legendBody").innerHTML = items.map((item) => `
+        <div class="audit-entry">
+          <span class="status-pill ${statusClass(item.key)}">${escapeHtml(item.key)}</span>
+          <span class="subtitle">${escapeHtml(item.text)}</span>
+        </div>
+      `).join("");
+    }
+
+    function collectSidecarPrompts() {
+      const prompts = [];
+      recommendedActions.forEach((item, index) => {
+        const prompt = item.oldThreadBackfillPrompt || item.newExecutionThreadPrompt || "";
+        if (prompt) prompts.push({ id: `recommended-${index}`, title: item.taskId || item.branch || item.recommendedActionType || "recommended action", prompt });
+      });
+      cleanupPrompts.forEach((item, index) => {
+        if (item.prompt) prompts.push({ id: `cleanup-${index}`, title: item.taskId || item.branch || "cleanup prompt", prompt: item.prompt });
+      });
+      (threadDiscoveryAudit.refreshRequests || []).forEach((item, index) => {
+        if (item.prompt) prompts.push({ id: `refresh-${index}`, title: item.threadLabel || item.taskId || item.codexThreadId || "thread refresh", prompt: item.prompt });
+      });
+      return prompts.slice(0, 8);
     }
 
     function renderActions() {
-      const node = selectedNode();
-      const prompt = node ? buildPrompt(node) : "Use audit-project for Agent Workflow Hub.";
-      const auditPrompt = "Use $agent-workflow-hub to run visualize-project / audit-project for this Project Hub. Keep Project as context; main graph remains Task -> Thread -> Environment(optional); dependencies and th-project-hub stay secondary.";
+      const prompts = collectSidecarPrompts();
       document.getElementById("actionBody").innerHTML = `
         <div class="audit-entry">
-          <span class="status-pill status-attention">audit / routing</span>
-          <b>th-project-hub</b>
-          <span class="subtitle">Project Hub thread owns inventory, routing, audit-project, weekly report, and backfill prompts. It does not enter the main relationship graph.</span>
+          <span class="status-pill status-attention">sidecar action</span>
+          <b>${escapeHtml(t("actionTitle"))}</b>
+          <span class="subtitle">${escapeHtml(t("sidecarOnly"))}</span>
         </div>
-        ${copyBlock("Selected route prompt", prompt)}
-        ${copyBlock("Project audit prompt", auditPrompt)}
-        ${warnings.length ? listBlock("warnings", warnings) : ""}
+        ${prompts.length ? prompts.map((item) => copyBlock(`${t("promptSource")} / ${item.title}`, item.prompt)).join("") : `<span class="chip">${escapeHtml(t("noActions"))}</span>`}
+        ${warnings.length ? listBlock(t("warnings"), warnings) : ""}
       `;
       document.querySelectorAll("#actionBody [data-copy]").forEach((button) => {
         button.addEventListener("click", () => copyText(button.dataset.copy, button.dataset.label));
@@ -1514,9 +1757,9 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
     async function copyText(text, label) {
       try {
         await navigator.clipboard.writeText(text);
-        showToast(`${label} copied`);
+        showToast(`${label} ${t("copied")}`);
       } catch (error) {
-        showToast("复制被浏览器阻止，请手动选择文本");
+        showToast(t("copyBlocked"));
       }
     }
 
@@ -1551,8 +1794,10 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
       renderMap();
       renderMatrix();
       renderTimeline();
+      renderNeedsAttention();
       renderSecondary();
       renderDetail();
+      renderLegend();
       renderActions();
       setMode(state.mode);
     }
@@ -1564,6 +1809,14 @@ def build_visual_project_html(report: dict[str, Any]) -> str:
     document.getElementById("mapMode").addEventListener("click", () => setMode("map"));
     document.getElementById("matrixMode").addEventListener("click", () => setMode("matrix"));
     document.getElementById("timelineMode").addEventListener("click", () => setMode("timeline"));
+    document.getElementById("zhMode").addEventListener("click", () => {
+      state.lang = "zh-CN";
+      renderAll();
+    });
+    document.getElementById("enMode").addEventListener("click", () => {
+      state.lang = "en";
+      renderAll();
+    });
     window.addEventListener("resize", () => requestAnimationFrame(drawEdges));
     renderAll();
   </script>
